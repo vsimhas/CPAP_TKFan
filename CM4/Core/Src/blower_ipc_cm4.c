@@ -66,6 +66,12 @@ static bool s_brake_latched;
 
 static int16_t BlowerIpc_RpmToSpeedUnit(int32_t rpm)
 {
+  /* Clamp to the drive's limit first: STC_ExecRamp REJECTS a target above
+   * MAX_APPLICATION_SPEED_RPM (the ramp is not run at all) rather than
+   * saturating it, so an over-range command from CM7 would leave the rotor at
+   * its previous speed. TKFan: 36000 rpm (drive_parameters.h). */
+  if (rpm >  (int32_t)MAX_APPLICATION_SPEED_RPM) { rpm =  (int32_t)MAX_APPLICATION_SPEED_RPM; }
+  if (rpm < -(int32_t)MAX_APPLICATION_SPEED_RPM) { rpm = -(int32_t)MAX_APPLICATION_SPEED_RPM; }
   /* SPEED_UNIT/U_RPM is typically 10/60 = 1/6, so even at 36528 RPM
    * (workbench app limit) the result is ~6088, which fits comfortably in
    * an int16. We still do the math in int32 to avoid intermediate overflow. */
@@ -308,9 +314,11 @@ void BlowerBrake_Update(void)
 }
 
 /* Runtime speed-PI current limit ("foc set iq_max_ma"). The upper bound is
- * a hard cap independent of the mailbox: the STSPIN830 trips at 3.0 A min
- * and this motor's PWM ripple puts peaks ~0.7-1.0 A above the controlled
- * current (see IQMAX_A in drive_parameters.h). */
+ * a hard cap independent of the mailbox: the STSPIN830 trips at 3.0 A min.
+ * On the WM6850 (~70 uH) PWM ripple put peaks ~0.7-1.0 A above the
+ * controlled current; the TKFan's 0.21 mH gives about a third of that ripple,
+ * but its 1.075 ohm phases dissipate ~4x the copper loss at a given current
+ * (see IQMAX_A in drive_parameters.h). */
 #define IQ_MAX_RUNTIME_MIN_MA  500U
 #define IQ_MAX_RUNTIME_MAX_MA  1800U
 
@@ -339,15 +347,43 @@ void BlowerBrake_Update(void)
  * PWM ripple the phase peaks at 1.8 A are estimated ~2.5-2.8 A against the
  * STSPIN830's 3.0 A minimum trip - scope the phase current before going
  * further, and fall back with "foc set iq_boost_ma 1650" if DP_FAULT appears. */
+/* TKFan, 2026-10-22: boost ON by default at 1800 mA, full up to 30 krpm and
+ * tapering off by 31.5 krpm. Bench, vent-only closed circuit, open loop, true speed steps
+ * (step_tk.py), against 1314 mA with no boost:
+ *   10 -> 20 cmH2O (19.4 -> 27.4k): 20.0 -> 30.0 krpm/s, speed t90 0.44 ->
+ *     0.32 s, pressure t90 0.25 -> 0.20 s - level with the WM6850 on its own
+ *     1800 mA boost (30.4 krpm/s). Peak iq 1698 mA.
+ *   4 -> 20 cmH2O (12.2 -> 27.4k): only 22.8 -> 25.3 krpm/s, because the
+ *     boost then ramped in at 18-20k (the WM6850 values) - see below.
+ *   Cost: ~+100 rpm / +0.25 cmH2O more step overshoot (more speed-PI
+ *   integral at the higher limit). No faults; Vbus flat (23.64-23.68 V).
+ * The WM6850's limits, translated:
+ *   - Taper: the WM6850 kept the boost out above ~35.5-37k because current
+ *     control degraded there (three-shunt sampling window shrinks as the
+ *     modulation rises; Id scattered 1-2 A and one DP_FAULT at 38.2k). That
+ *     is ~85-92 % of Vbus/sqrt3. The TKFan reaches the same modulation much
+ *     lower - measured |Vqd| under load: 74 % at 26k, 88 % at 30k (outlet
+ *     open, 1.0 A), 87 % at 32k (leak open), 83 % at 32k vent-only - so its
+ *     taper sits at 30-31.5k. (A first version of this change put the taper
+ *     above the speed cap, from a misread of the vq_mv telemetry field as a
+ *     fraction of 32767; it is millivolts.)
+ *   - Over-current: its 0.21 mH (3x the WM6850) cuts PWM ripple to about a
+ *     third, so 1.8 A puts phase peaks near ~2.1-2.2 A against the
+ *     STSPIN830's 3.0 A minimum trip (WM6850: ~2.5-2.8 A estimated).
+ * Watch: copper loss is ~5.2 W at 1.8 A (1.5 x 1.8^2 x 1.07 ohm) vs 2.8 W at
+ * 1.314 A. It is reached only in brief acceleration bursts, but check motor
+ * temperature in a long 20 cmH2O breathing run, and watch for DP_FAULT.
+ * Runtime override: "foc set iq_boost_ma 0" (off) or another value. */
 #define IQ_BOOST_DEFAULT_MA       1800U
-#define IQ_BOOST_DEFAULT_LO_RPM   35500U
-#define IQ_BOOST_DEFAULT_HI_RPM   37000U
-/* No boost until the rotor is well clear of the sensorless hand-over
- * (~14.4 krpm), where full current used to trip DP_FAULT on start (fixed by
- * the CM7 post-hand-over ramp, validated at iq_max). Ramped in over
- * 18-20 krpm so starts run exactly as before. */
-#define IQ_BOOST_ON_START_RPM     18000
-#define IQ_BOOST_ON_FULL_RPM      20000
+#define IQ_BOOST_DEFAULT_LO_RPM   30000U
+#define IQ_BOOST_DEFAULT_HI_RPM   31500U
+/* No boost until the rotor is clear of the sensorless hand-over. TKFan: the
+ * observer takes over at 11804 rpm (OBS_MINIMUM_SPEED_RPM), so the boost now
+ * ramps in over 14-15 krpm (WM6850: 18-20 krpm, above its 14.4k hand-over,
+ * where full current used to trip DP_FAULT on start). Starts themselves run
+ * at IQMAX as before; 4 cmH2O sits at ~12.2k, below the ramp-in. */
+#define IQ_BOOST_ON_START_RPM     14000
+#define IQ_BOOST_ON_FULL_RPM      15000
 
 /* Written by the main loop (BlowerIpc_CM4_LatchIqLimit), read by the
  * medium-frequency hook. Each is one aligned word, so a change caught

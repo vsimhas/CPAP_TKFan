@@ -28,96 +28,66 @@
  *** Motor Parameters ***
  ************************/
 
+/* TKFan BA7060H24B (repo CPAP_TKFan, 2026-10-22). Motor-derived values were
+ * first regenerated from the TKFan profile (TKFan.json) by scaling, then
+ * checked against Workbench's own project for the same profile,
+ * D:\Code\CPAP_TestTKFan (generated for an STM32H745ZI / X-NUCLEO-IHM16M1
+ * template, so its timer and power-stage values do not apply to this board).
+ * Agreed exactly: F1/F2, PLL gains, max speed, observer hand-over and rev-up
+ * target speeds; current PI identical once its divider is accounted for.
+ * Taken from Workbench: observer GAIN1/GAIN2 (with RS 1.07, Ke 0.5),
+ * nominal current 1.314, PHASE1_DURATION 1000. Kept deliberately different:
+ * speed PI, PHASE2_DURATION, dividers, and all board/power-stage values -
+ * see the notes at each. Original scaling rules, for reference:
+ *   - current PI:   KP ~ Ls x profiling Vdc, KI ~ Rs x profiling Vdc
+ *                   (KI/KP = 2 Rs Ts / Ls, pole-zero cancellation; the
+ *                   TKFan was profiled at the same 20.77 V as cfe9528)
+ *   - STO gains:    double observer pole at z = 0.2265 (all three WM6850
+ *                   profiles land on 0.225-0.227 once MAX_BEMF_VOLTAGE is
+ *                   truncated as parameters_conversion.h does)
+ *   - PLL gains:    proportional to MAX_APPLICATION_SPEED_RPM
+ *   - start-up:     observer minimum 36 %, rev-up target 40 % of max speed;
+ *                   currents = nominal current
+ * The hand-tuned items carried over from the WM6850 (speed PI, Iq limit
+ * policy) are marked as such. */
+
 /******** MAIN AND AUXILIARY SPEED/POSITION SENSOR(S) SETTINGS SECTION ********/
 
-/* Over-modulation. 0 = classic SVPWM (as shipped), 1 = PWMC_SetPhaseVoltage_OVM.
+/* Over-modulation. 0 = classic SVPWM, 1 = PWMC_SetPhaseVoltage_OVM.
  *
- * WHAT IT BUYS. The fundamental line-to-line RMS a three-phase inverter can
- * produce is 0.707*Vbus under linear SVPWM and up to 0.780*Vbus in six-step,
- * so the ceiling moves by about 10%. Measured base: 37700 rpm on a 23.9 V
- * bus, back-EMF limited, with Iq at only 58-65% of its limit - the drive has
- * torque in hand and simply runs out of volts. Full six-step would give
- * ~41600 rpm; partial over-modulation, which is what is realistically usable
- * here, more like 39500.
- *
- * HAZARD 1 - THE OBSERVER. This is sensorless (STO+PLL), and the state
- * observer reconstructs applied phase voltage as Vbus * Valfa_beta, which
- * assumes LINEAR modulation. In over-modulation the real fundamental is up to
- * 10% above what that product implies, so the back-EMF estimate - and with it
- * speed and rotor angle - degrades exactly in the region being entered. This
- * is the same failure mode as the VBUS_PARTITIONING_FACTOR error fixed on
- * 2026-09-24, which made every reported rpm ~11% low for months. Watch for
- * MC_SPEED_FDBK: VARIANCE_THRESHOLD is 0.25 with 3 errors before fault.
- *
- * HAZARD 2 - CURRENT SAMPLING. Three-shunt reconstruction needs a minimum
- * duty window, TW_AFTER = DEADTIME + MAX_TNTR = 550 + 1000 = 1550 ns, which
- * is 3.1% of the 50 us period at 20 kHz. Over-modulation works BY pushing two
- * of the three duties toward the rails, so it eats that window as it makes
- * the extra voltage. Partial over-modulation should survive; deep
- * over-modulation approaching six-step probably will not on 3 shunts. The
- * symptom is erratic Iq rather than a clean fault.
- *
- * Also expect more torque and current ripple and more acoustic noise, which
- * matters in a device that sits next to someone sleeping. And more speed
- * means more regenerative energy on deceleration, into a bus whose
- * over-voltage margin is already down to ~1 V.
- *
- * HOW TO TEST. In ST Motor Pilot only, never in therapy. Ramp slowly past
- * 37700 and watch Speed Feedback and Iq. If the observer holds to ~39500 the
- * gain is real; if it faults, set this back to 0 and rebuild - nothing else
- * has to change, the SVPWM path is still compiled in. */
+ * TKFan, 2026-10-22: ON, for the 36000 rpm maximum below (was 0, the
+ * Workbench default, while the cap was 32790). Measured on the TKFan
+ * (23.6 V bus), |Vqd| is 83 % of Vbus/sqrt3 at 32k vent-only and 87-88 % at
+ * 30-32k under load, so linear SVPWM runs out near ~34k under load; 36k
+ * needs the extra ~10 % that over-modulation gives (six-step ceiling 0.78
+ * vs 0.707 Vbus line-to-line rms). Why 36k: full AirSense 11 flow (136 L/min
+ * at 20 cmH2O) at 3010 m / 35 C needs ~35.1k (density 0.72 of the bench).
+ * The WM6850 build runs with this on. The hazards below (observer assumes
+ * linear modulation; three-shunt sampling window) apply above ~34k: verify
+ * speed estimate, Id and DP_FAULT there on the bench before relying on it.
+ * Set 0 (and MAX_APPLICATION_SPEED_RPM back to 32790 with GAIN2 18328 and
+ * PLL 872/31) to return to the linear-only build. */
 #ifndef FOC_OVERMODULATION_ENABLE
 #define FOC_OVERMODULATION_ENABLE           1
 #endif
 
 /*** Speed measurement settings ***/
-/* 2026-09-23: 36012 -> 40000, raised so CPAP can hold high setpoints against
- * real inspiratory flow. At 18 cmH2O the pressure loop was commanding 36000
- * for 40% of every inspiratory limb and still sagging 1.8-2.4 cmH2O; six of
- * fifteen measured breaths needed more than 36528 rpm to hold setpoint.
- *
- * READ THIS BEFORE TRUSTING THE NUMBER. Raising the reference saturation does
- * not raise the speed the motor can actually reach, and on this power stage
- * the two are not the same:
- *
- *   MOTOR_VOLTAGE_CONSTANT   0.5 V RMS ph-ph per kRPM
- *   OV_VOLTAGE_THRESHOLD_V   24.9  (so the bus is ~24 V)
- *   flux weakening           NOT generated - no FW source files exist
- *
- * Back-EMF at 40 kRPM is 20 V RMS line-to-line. With SVPWM a 24 V bus yields
- * about 24/sqrt(2) = 17 V RMS line-to-line before over-modulation, i.e. a
- * BEMF-limited ceiling near 34 kRPM, before IR drop and dead-time. That
- * matches the bench exactly: across three captures on 2026-09-23 the measured
- * mechanical speed never exceeded 35742 rpm and typically plateaued at
- * 34500-35400 while the command sat at 36000. The command-to-actual gap was
- * SUSTAINED through the flat top of inspiration rather than closing, which is
- * the signature of a voltage ceiling and not of rotor inertia.
- *
- * So 36012 was very close to what this bus can deliver, and the profiler
- * arriving at that figure was it measuring the voltage limit. Reaching 40000
- * needs more bus voltage or flux weakening; neither is a firmware constant.
- *
- * What this change does buy, and why it is still worth making: the speed
- * reference is no longer clipped below the voltage limit, so whatever
- * headroom does exist between ~36 k and the real ceiling becomes usable.
- *
- * RISK, accepted deliberately. With the reference above the reachable speed
- * the speed PI cannot null its error, so it will wind up and hold q-axis
- * current at NOMINAL_CURRENT (1.345 A) for the whole of a large inspiration.
- * Watch motor temperature, and watch for MC_SPEED_FDBK - VARIANCE_THRESHOLD
- * is 0.25 with M1_SS_MEAS_ERRORS_BEFORE_FAULTS of 3. Derived observer
- * constant C3 also scales with MAX_BEMF_VOLTAGE and therefore moves by
- * 40000/36012 = 1.11x, so observer behaviour is not identical at any speed,
- * not just the new top end. Revert this line alone to undo all of it. */
-/* 2026-09-24: 40000 -> 43000, so the blower's full 42500 rpm rating can be
- * commanded with a little margin above it. Note this also raises
- * MAX_BEMF_VOLTAGE and therefore observer constant C3 by 43000/40000 = 1.075.
- *
- * Whether the shaft actually gets there is a separate question and the bus
- * probably decides it - see the back-EMF note above, now to be re-read with
- * the CORRECTED bus figure of ~23.9 V rather than the 21 V the broken divider
- * scaling reported. */
-#define MAX_APPLICATION_SPEED_RPM           43000 /*!< rpm, mechanical */
+/* TKFan, 2026-10-22: 32790 -> 36000. 32790 was the profiler's maxRatedSpeed
+ * on its 20.77 V bus. Tenkai's own listing for this exact part
+ * (BA7060H24B-K260417) gives 36000 rpm with 52.8 W and 458 L/min, which is
+ * the datasheet's free-air point (34217 rpm, 44.8 W, 445 L/min) scaled by
+ * the fan laws, i.e. its full-power top speed. NOT yet a written maximum
+ * continuous rating - confirm with Tenkai (and bearing life at 36k).
+ * Above ~34k under load this needs FOC_OVERMODULATION_ENABLE (above).
+ * CM4 clamps incoming speed commands to this (blower_ipc_cm4.c), because
+ * the SDK rejects a ramp target above it instead of saturating; the shared
+ * BLOWER_IPC_MAX_SPEED_RPM (Common/Inc/blower_ipc.h) matches it.
+ * Moving this moves MAX_BEMF_VOLTAGE (16 -> 17, so observer C3 9549 ->
+ * 10146) and the PLL gains; GAIN2 and PLL_K*_GAIN below are regenerated for
+ * 36000. The observer hand-over (OBS_MINIMUM_SPEED_RPM 11804) and rev-up
+ * target (13116) are deliberately left at their verified 32790-based values
+ * rather than Workbench's 36 %/40 % of 36000 (12960/14400). */
+#define MAX_APPLICATION_SPEED_RPM           36000 /*!< rpm, mechanical */
 #define MIN_APPLICATION_SPEED_RPM           0 /*!< rpm, mechanical, absolute value */
 #define M1_SS_MEAS_ERRORS_BEFORE_FAULTS     3 /*!< Number of speed measurement errors before main sensor goes in fault */
 
@@ -125,17 +95,31 @@
 #define VARIANCE_THRESHOLD                  0.25 /*!< Maximum accepted variance on speed estimates (percentage) */
 
 /* State observer scaling factors F1 */
-#define F1                                  8192
+/* TKFan: F1 8192 -> 16384, the largest scale at which C1/C2/C3/C5 still fit
+ * int16 (C5 = 20292 with LS 0.21 mH; with the WM6850's 0.07 mH it did not,
+ * which is why that profile had 8192). */
+#define F1                                  16384
 #define F2                                  16384
-#define F1_LOG                              LOG2((8192))
+#define F1_LOG                              LOG2((16384))
 #define F2_LOG                              LOG2((16384))
 
-/* State observer constants */
-#define GAIN1                               -11146
-#define GAIN2                               5275
+/* State observer constants. TKFan: Workbench's values (CPAP_TestTKFan),
+ * computed for RS 1.07, LS 0.21 mH, Ke 0.5 (MAX_BEMF_VOLTAGE 16, C1 4174,
+ * C3 9549 at F1 = F2 = 16384): observer poles 0.219 +/- 0.200j, |z| 0.30.
+ * They are only valid with those RS / LS / MOTOR_VOLTAGE_CONSTANT values.
+ * 2026-10-22, max speed 36000: MAX_BEMF_VOLTAGE 17, C3 10146, so GAIN2
+ * 18328 x 9549/10146 = 17250 keeps the product C3*GAIN2 and with it the
+ * same poles (checked: 0.2186 +/- 0.2034j). GAIN1 depends only on C1 and is
+ * unchanged. For the 32790 build: GAIN2 18328. Was -11146 / 5275 for the
+ * WM6850. */
+#define GAIN1                               -21432
+#define GAIN2                               17250
 
 /* Only in case PLL is used, PLL gains */
-#define PLL_KP_GAIN                         958
+/* TKFan: Workbench scales both with max speed. 36000: 872/31 x 36000/32790
+ * = 957/34 (the same values Workbench gave the WM6850 at 36012). For the
+ * 32790 build: 872/31. */
+#define PLL_KP_GAIN                         957
 #define PLL_KI_GAIN                         34
 #define PLL_KPDIV                           16384
 #define PLL_KPDIV_LOG                       LOG2((PLL_KPDIV))
@@ -163,12 +147,16 @@
 #define REGULATION_EXECUTION_RATE           1 /*!< FOC execution rate in number of PWM cycles */
 #define ISR_FREQUENCY_HZ                    (PWM_FREQUENCY/REGULATION_EXECUTION_RATE) /*!< @brief FOC execution rate in Hz */
 
-/* Gains values for torque and flux control loops */
-#define PID_TORQUE_KP_DEFAULT               2168
-#define PID_TORQUE_KI_DEFAULT               806
+/* Gains values for torque and flux control loops.
+ * TKFan: 2168 x 0.21/0.07 and 806 x 1.0748/0.2601 (WM6850 Workbench values
+ * scaled by Ls and Rs). Identical to Workbench's TKFan project, which has
+ * KP 3252 with TF_KPDIV 4096 (= 6504 / 8192) and KI 3329. The 8192 divider is
+ * kept so raw "foc set torque_kp" values keep their meaning on this repo. */
+#define PID_TORQUE_KP_DEFAULT               6504
+#define PID_TORQUE_KI_DEFAULT               3330
 #define PID_TORQUE_KD_DEFAULT               100
-#define PID_FLUX_KP_DEFAULT                 2168
-#define PID_FLUX_KI_DEFAULT                 806
+#define PID_FLUX_KP_DEFAULT                 6504
+#define PID_FLUX_KI_DEFAULT                 3330
 #define PID_FLUX_KD_DEFAULT                 100
 
 /* Torque/Flux control loop gains dividers*/
@@ -180,7 +168,19 @@
 #define TF_KDDIV_LOG                        LOG2((8192))
 #define TFDIFFERENTIAL_TERM_ENABLING        DISABLE
 
-/* 2026-10-01: KP 1637 -> 4000 (Workbench value was 1637).
+/* TKFan: speed PI KEPT at the values hand-tuned on the WM6850 (1637 / 1024),
+ * not Workbench's. Workbench's TKFan project has KP 3713 with SP_KPDIV 1024
+ * (= 464 on this file's /128 scale, 3.5x softer than 1637) and KI 10 (100x
+ * lower); on the WM6850 its KI (307) already proved far too slow for CPAP.
+ * Fallback if the speed loop oscillates on the TKFan: "foc set speed_kp 464"
+ * and raise KI from there.
+ * The TKFan rotor has ~1.4x the WM6850's inertia (2.45 vs 1.73), so with the
+ * same gains expect a ~30 % slower speed loop. Re-tune on the bench (runtime:
+ * "foc set speed_kp / speed_ki"); the WM6850 notes below explain the limits
+ * (KP was capped by DP_FAULT on ref steps, not by stability).
+ *
+ * WM6850 history:
+ * 2026-10-01: KP 1637 -> 4000 (Workbench value was 1637).
  * 1637/128 is ~0.43 mA per rpm of speed error; against the measured inertia
  * (~40 mA per krpm/s) that is a ~1.7 Hz speed loop. In breathing at 16 cmH2O
  * the rotor had to be >1000 rpm off its reference before the PI pushed hard
@@ -273,11 +273,15 @@
  * kept as the limit above ~37 krpm, and a speed-dependent boost (1.65 A up
  * to 35.5 krpm, tapering to this by 37 krpm) is applied on top - see
  * BlowerIpc_CM4_UpdateIqLimit() in blower_ipc_cm4.c. */
-#define IQMAX_A                             1.445
+/* TKFan: the profile's nominal current (Workbench sets IQMAX to it). This is
+ * the base limit; above 14-15 krpm an 1800 mA boost applies (blower_ipc_cm4.c,
+ * on by default since 2026-10-22 after bench step tests). Copper loss at a
+ * given current is ~4x the WM6850's (1.07 vs 0.26 ohm per phase). */
+#define IQMAX_A                             1.314
 
 /* Default settings */
 #define DEFAULT_CONTROL_MODE                MCM_SPEED_MODE
-#define DEFAULT_TARGET_SPEED_RPM            12965
+#define DEFAULT_TARGET_SPEED_RPM            11804
 #define DEFAULT_TARGET_SPEED_UNIT           (DEFAULT_TARGET_SPEED_RPM*SPEED_UNIT/U_RPM)
 #define DEFAULT_TORQUE_COMPONENT_A          0
 #define DEFAULT_FLUX_COMPONENT_A            0
@@ -317,31 +321,46 @@
 #define OVP_SELECTION2                      COMP_Selection_COMP1
 
 /******************************   START-UP PARAMETERS   **********************/
+/* TKFan: rev-up to 13116 rpm (40 % of max) at the nominal 1.314 A, observer
+ * hand-over from 11804 rpm (36 %) - both as Workbench generated them.
+ *
+ * PHASE1 (alignment) 320 -> 1000 ms, Workbench's TKFan value: the TKFan's low
+ * friction (0.41 vs 1.94) means the rotor rings longer before it settles on
+ * the alignment vector.
+ *
+ * PHASE2 (rev-up) KEPT at 4322 ms; Workbench's TKFan project has 26232 ms.
+ * Workbench's figure scales with the mechanical time constant J/B (WM6850
+ * 4322 x (2.45/1.73) x (1.94/0.41) = 29000), not with what the start needs:
+ * 1.314 A gives ~7.7 mNm, and following 13116 rpm in 4.3 s on 2.45e-6
+ * kg m^2 takes ~0.8 mNm. With 26 s the observer would only lock at ~25 s,
+ * past CM7's 10 s start grace (g_safety_grace_s), so every therapy start
+ * would trip. If the start fails to lock on the bench, lengthen this first
+ * (in steps; 8-10 s still fits the grace). */
 
 /* Phase 1 */
-#define PHASE1_DURATION                     320 /*milliseconds */
+#define PHASE1_DURATION                     1000 /*milliseconds */
 #define PHASE1_FINAL_SPEED_UNIT             (0*SPEED_UNIT/U_RPM)
-#define PHASE1_FINAL_CURRENT_A              1.345
+#define PHASE1_FINAL_CURRENT_A              1.314
 
 /* Phase 2 */
 #define PHASE2_DURATION                     4322 /*milliseconds */
-#define PHASE2_FINAL_SPEED_UNIT             (14405*SPEED_UNIT/U_RPM)
-#define PHASE2_FINAL_CURRENT_A              1.345
+#define PHASE2_FINAL_SPEED_UNIT             (13116*SPEED_UNIT/U_RPM)
+#define PHASE2_FINAL_CURRENT_A              1.314
 
 /* Phase 3 */
 #define PHASE3_DURATION                     0 /*milliseconds */
-#define PHASE3_FINAL_SPEED_UNIT             (14405*SPEED_UNIT/U_RPM)
-#define PHASE3_FINAL_CURRENT_A              1.345
+#define PHASE3_FINAL_SPEED_UNIT             (13116*SPEED_UNIT/U_RPM)
+#define PHASE3_FINAL_CURRENT_A              1.314
 
 /* Phase 4 */
 #define PHASE4_DURATION                     0 /*milliseconds */
-#define PHASE4_FINAL_SPEED_UNIT             (14405*SPEED_UNIT/U_RPM)
-#define PHASE4_FINAL_CURRENT_A              1.345
+#define PHASE4_FINAL_SPEED_UNIT             (13116*SPEED_UNIT/U_RPM)
+#define PHASE4_FINAL_CURRENT_A              1.314
 
 /* Phase 5 */
 #define PHASE5_DURATION                     0 /* milliseconds */
-#define PHASE5_FINAL_SPEED_UNIT             (14405*SPEED_UNIT/U_RPM)
-#define PHASE5_FINAL_CURRENT_A              1.345
+#define PHASE5_FINAL_SPEED_UNIT             (13116*SPEED_UNIT/U_RPM)
+#define PHASE5_FINAL_CURRENT_A              1.314
 
 #define ENABLE_SL_ALGO_FROM_PHASE           2
 
@@ -349,7 +368,7 @@
 #define STARTING_ANGLE_DEG                  0  /*!< degrees [0...359] */
 
 /* Observer start-up output conditions  */
-#define OBS_MINIMUM_SPEED_RPM               12965
+#define OBS_MINIMUM_SPEED_RPM               11804
 #define NB_CONSECUTIVE_TESTS                2 /* corresponding to former
                                                  NB_CONSECUTIVE_TESTS / (TF_REGULATION_RATE / MEDIUM_FREQUENCY_TASK_RATE) */
 #define SPEED_BAND_UPPER_LIMIT              17 /*!< It expresses how much estimated speed can exceed forced stator electrical
