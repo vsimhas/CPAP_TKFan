@@ -385,6 +385,24 @@ void BlowerBrake_Update(void)
 #define IQ_BOOST_ON_START_RPM     14000
 #define IQ_BOOST_ON_FULL_RPM      15000
 
+/* TKFan high-speed current safeguard, 2026-10-22. Above 33k the speed-PI
+ * current limit is stepped down - whatever the base/boost settings, including
+ * runtime "foc set" overrides - from the 1314 mA base at 33k to 1100 mA at
+ * 35k and above, so over-modulation is only entered at moderate current.
+ * Why: with the outlet wide open and the boost lifted for a test, the TKFan
+ * held 34k at 107 % modulation (1.39 A), then tripped DP_FAULT (STSPIN830
+ * OCP, 3.0 A min) at 34.1k / 108 % with only ~1.45-1.5 A sampled - in
+ * over-modulation the phase current is distorted and the three-shunt window
+ * shrinks, so true peaks run far above the sampled value. The WM6850 failed
+ * the same way at 38.2k. The CPAP case that needs these speeds (full flow at
+ * high altitude) runs at moderate current: 36k on a ~115 L/min load took
+ * 947 mA at 99 % modulation, cleanly. 1100 mA keeps ~150 mA of headroom there
+ * and ~25-30 % below the observed trip. Over-modulation at 1.0-1.3 A remains
+ * untested on the bench. */
+#define IQ_HISPEED_DERATE_START_RPM   33000
+#define IQ_HISPEED_DERATE_FULL_RPM    35000
+#define IQ_HISPEED_DERATE_MA          1100U
+
 /* Written by the main loop (BlowerIpc_CM4_LatchIqLimit), read by the
  * medium-frequency hook. Each is one aligned word, so a change caught
  * mid-update mixes old and new values for at most one speed-loop tick,
@@ -457,15 +475,29 @@ void BlowerIpc_CM4_UpdateIqLimit(void)
   }
 
   int16_t lim = base;
+  int32_t rpm = BlowerIpc_SpeedUnitToRpm(MC_GetMecSpeedAverageMotor1());
+  if (rpm < 0) { rpm = -rpm; }
   const int32_t extra = (int32_t)s_iq_boost_lim - (int32_t)base;
   if ((extra > 0) && (MC_GetSTMStateMotor1() == RUN))
   {
-    int32_t rpm = BlowerIpc_SpeedUnitToRpm(MC_GetMecSpeedAverageMotor1());
-    if (rpm < 0) { rpm = -rpm; }
     const float on  = BlowerIpc_Ramp01(rpm, IQ_BOOST_ON_START_RPM, IQ_BOOST_ON_FULL_RPM);
     const float off = 1.0f - BlowerIpc_Ramp01(rpm, s_iq_boost_lo_rpm, s_iq_boost_hi_rpm);
     const float k = (on < off) ? on : off;
     lim = (int16_t)((int32_t)base + (int32_t)(k * (float)extra));
+  }
+
+  /* High-speed safeguard (see IQ_HISPEED_DERATE_*): cap the limit, never
+   * raise it, so a lower runtime iq_max still wins. */
+  {
+    const float k_unit = (float)CURRENT_CONV_FACTOR / 1000.0f;   /* units per mA */
+    const float base_ma = (float)base / k_unit;
+    const float floor_ma = (float)IQ_HISPEED_DERATE_MA;
+    const float k = BlowerIpc_Ramp01(rpm, IQ_HISPEED_DERATE_START_RPM, IQ_HISPEED_DERATE_FULL_RPM);
+    if ((k > 0.0f) && (base_ma > floor_ma))
+    {
+      const int16_t cap = (int16_t)((base_ma - k * (base_ma - floor_ma)) * k_unit);
+      if (lim > cap) { lim = cap; }
+    }
   }
 
   if (lim != s_iq_applied_lim)
