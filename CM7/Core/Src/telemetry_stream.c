@@ -103,6 +103,7 @@ extern volatile uint8_t g_blower_ctrl_physics_ff_exhale_mit_enable;
 extern volatile uint8_t g_blower_ctrl_integ_hold;
 extern volatile uint8_t g_blower_ctrl_integ_headroom_hold_enable;
 extern volatile float   g_blower_ctrl_physics_ff_c_fan_cmh2o_per_slm2;
+extern volatile float   g_blower_ctrl_physics_ff_c_fan_exp_cmh2o_per_slm2;
 extern volatile float   g_blower_ctrl_physics_ff_hose_r_lam;
 extern volatile float   g_blower_ctrl_physics_ff_hose_r_turb;
 extern volatile float   g_blower_ctrl_physics_ff_flow_lpf_hz;
@@ -573,6 +574,15 @@ static int Telem_SetFloatParam(const char *name, float value)
     if (value < 0.0f) { value = 0.0f; }
     if (value > BLOWER_CTRL_C_FAN_MAX) { value = BLOWER_CTRL_C_FAN_MAX; }
     g_blower_ctrl_physics_ff_c_fan_cmh2o_per_slm2 = value;
+    return 1;
+  }
+  /* Expiratory side of the fan-load term (below the resting flow); same
+   * clamp. Set equal to physics_ff_c_fan for the old single-c_fan model. */
+  if (strcmp(name, "physics_ff_c_fan_exp") == 0)
+  {
+    if (value < 0.0f) { value = 0.0f; }
+    if (value > BLOWER_CTRL_C_FAN_MAX) { value = BLOWER_CTRL_C_FAN_MAX; }
+    g_blower_ctrl_physics_ff_c_fan_exp_cmh2o_per_slm2 = value;
     return 1;
   }
   /* The physics FF's own hose basis (fitted together with c_fan), separate

@@ -1354,6 +1354,7 @@ def main() -> int:
         "dip_ff_enable": tk.BooleanVar(value=True),
         "physics_ff_enable": tk.BooleanVar(value=True),
         "physics_ff_c_fan": tk.StringVar(value="0.0008"),   # 2026-10-05 ~150 slm element set
+        "physics_ff_c_fan_exp": tk.StringVar(value="0.0001"),   # 2026-10-22 TKFan: expiratory side (sweep)
         "physics_ff_flow_lpf_hz": tk.StringVar(value="4"),
         "physics_ff_flow_lpf_inhale_hz": tk.StringVar(value="3"),
         "physics_ff_rise": tk.StringVar(value="20000"),   # 2026-10-02 (was 6000)
@@ -2436,6 +2437,7 @@ def main() -> int:
     add_entry(tuning, 30, 2, "breath win s", "over_p_exp_window", 6)
     add_entry(tuning, 31, 0, "underP thr", "under_p_thresh", 6)
     add_entry(tuning, 31, 1, "start ramp", "start_ramp", 7)
+    add_entry(tuning, 31, 2, "c_fan exp", "physics_ff_c_fan_exp", 8)
     ttk.Button(tuning, text="Apply Blower Tuning", command=apply_blower_tuning).grid(
         row=32, column=2, columnspan=4, sticky="e", padx=(8, 0), pady=2
     )

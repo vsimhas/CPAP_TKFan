@@ -731,6 +731,36 @@ volatile uint8_t g_blower_ctrl_physics_ff_exhale_mit_enable = 1U;
  * spike 2.15, width 0.40, p-p 5.19, where the twin puts Round Hole_2 at
  * 3.03/4.08, 2.62, 0.52, 5.84 on the same breaths. */
 volatile float   g_blower_ctrl_physics_ff_c_fan_cmh2o_per_slm2 = 0.0008f;
+
+/* Expiratory side of the fan-load term, 2026-10-22 (TKFan BA7060H24B).
+ * c_fan above now applies while the total flow is at or above the resting
+ * flow (vent + leak, physicsFfVentFloorQSlm); BELOW it - expiration, when the
+ * patient supplies part of the vent flow - the drop from the resting value
+ * uses this coefficient instead:
+ *     Q >= Qr: fan_load = c_fan * Q^2
+ *     Q <  Qr: fan_load = c_fan * Qr^2 - c_fan_exp * (Qr^2 - Q^2)
+ * Continuous at Qr; c_fan_exp == c_fan gives the previous single-coefficient
+ * term exactly.
+ * Why: on the BreathSimulator (10 bpm, ~70 L/min breaths, 20 cmH2O) one shared
+ * c_fan traded the two halves of the breath against each other:
+ *     c_fan    insp dip  insp avg  exp plateau  end-exp dip
+ *     0.0008    -0.80     -0.05      -0.44        -0.59
+ *     0.0005    -0.82     -0.14      -0.26        -0.47
+ *     0.0003    -0.88     -0.20      -0.14        -0.51
+ *     0.0001    -1.00     -0.31      -0.05        -0.51
+ * The TKFan's flatter fan curve droops less with flow, so the full c_fan
+ * over-reduces speed through expiration (the -0.44 plateau sag), while
+ * inspiration still wants it.
+ * Split sweep (c_fan 0.0008 inspiratory side, two runs, same breaths):
+ *     c_fan_exp  insp dip  insp avg  exp plateau  end-exp dip
+ *     0.0008      -0.80     +0.02    -0.45/-0.40     -0.49   (old model)
+ *     0.0003      -0.87     -0.02    -0.12/-0.13     -0.55
+ *     0.0002      -0.77     +0.01    -0.12/-0.08     -0.56
+ *     0.0001      -0.77     +0.05    -0.04/-0.03     -0.50
+ *     0           -0.78     +0.02       -0.00        -0.48
+ * Inspiration is untouched by the split; the expiratory sag goes away.
+ * 0.0001 keeps a little of the physical droop that 0 would drop. */
+volatile float   g_blower_ctrl_physics_ff_c_fan_exp_cmh2o_per_slm2 = 0.0001f;
 volatile float   g_blower_ctrl_physics_ff_flow_lpf_hz = 4.0f;
 volatile float   g_blower_ctrl_physics_ff_flow_lpf_inhale_hz = 3.0f;
 volatile float   g_blower_ctrl_physics_ff_flow_lpf_exhale_hz = 3.0f;
@@ -1716,8 +1746,22 @@ static float physicsFfRpmForSetpointAndFlow(float setpoint_cmh2o, float q_slm)
      * adds ~6.8 cmH2O to p_equiv, i.e. several krpm of feed-forward. */
     const float c_fan = clampf(g_blower_ctrl_physics_ff_c_fan_cmh2o_per_slm2,
                                0.0f, BLOWER_CTRL_C_FAN_MAX);
+    const float c_fan_exp = clampf(g_blower_ctrl_physics_ff_c_fan_exp_cmh2o_per_slm2,
+                                   0.0f, BLOWER_CTRL_C_FAN_MAX);
     const float q_pos = (q_slm > 0.0f) ? q_slm : 0.0f;
-    const float fan_load = c_fan * q_pos * q_pos;
+    /* Split around the resting flow - see g_blower_ctrl_physics_ff_c_fan_exp. */
+    const float q_rest = physicsFfVentFloorQSlm();
+    float fan_load;
+    if (q_pos >= q_rest)
+    {
+        fan_load = c_fan * q_pos * q_pos;
+    }
+    else
+    {
+        fan_load = (c_fan * q_rest * q_rest)
+                 - (c_fan_exp * ((q_rest * q_rest) - (q_pos * q_pos)));
+        if (fan_load < 0.0f) { fan_load = 0.0f; }
+    }
     const float p_equiv  = sp + hose_drop + fan_load;
 
     g_blower_ctrl_physics_ff_hose_drop_cmh2o = hose_drop;
