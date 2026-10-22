@@ -1349,7 +1349,7 @@ def main() -> int:
         "ki_high": tk.StringVar(value="3900"),
         "kd_high": tk.StringVar(value="0.8"),
         "ff_enable": tk.BooleanVar(value=False),
-        "ff_k": tk.StringVar(value="6159"),   # 2026-10-07 refit: new blower box, mesh, new element LUT
+        "ff_k": tk.StringVar(value="5933"),   # 2026-10-22 refit: TKFan BA7060H24B, no box
         "flow_ff_enable": tk.BooleanVar(value=False),
         "dip_ff_enable": tk.BooleanVar(value=True),
         "physics_ff_enable": tk.BooleanVar(value=True),
@@ -1363,7 +1363,7 @@ def main() -> int:
         "physics_ff_exp_tail_flow_slm": tk.StringVar(value="6"),  # 2026-10-06 firmware default
         "physics_ff_inhale_rise_boost": tk.StringVar(value="2"),
         "under_p_gain": tk.StringVar(value="5"),   # 2026-10-02 (was 3.5)
-        "ff_offset": tk.StringVar(value="667"),   # 2026-10-07 refit with ff_k 6159 (slope 0)
+        "ff_offset": tk.StringVar(value="628"),   # 2026-10-22 TKFan refit with ff_k 5933 (slope 0)
         # Inspiratory onset lead. Fires on dQ/dt so it leads the flow
         # magnitude term. (An older thresh of 80 slm/s was above what a 25 slm
         # bench breath produces, ~40 slm/s peak; firmware default is now 20.)

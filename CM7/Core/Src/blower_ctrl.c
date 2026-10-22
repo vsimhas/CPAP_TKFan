@@ -272,8 +272,16 @@ volatile uint8_t g_blower_ctrl_ff_enable           = 0U;
  * draws ~60 mA more at 28 krpm for ~0.2 cmH2O less, and the no-box values
  * left I at -193 rpm at rest on the BreathSimulator. ff_cal.py, vent only:
  * k+offset residuals within +/-34 rpm; check at 6/12/18 cmH2O settled I
- * -22/+37/+6. Refit again if the box or its seals change. */
-volatile float   g_blower_ctrl_ff_k_rpm_per_sqrtcmh = 6159.0f;
+ * -22/+37/+6. Refit again if the box or its seals change.
+ *
+ * 2026-10-22: 6159 -> 5933 (offset 667 -> 628), TKFan BA7060H24B (repo
+ * CPAP_TKFan). Air path: blower -> flow element -> device P tap -> 22 mm
+ * hose -> vent -> external sensor -> leak closed; no box. ff_cal.py, vent
+ * only: with the WM6850 values the integrator already settled at only
+ * -32..-57 rpm over 4-20 cmH2O (rotor 12.8k at 4, 27.9k at 20 cmH2O);
+ * k+offset residuals within +/-18 rpm; check at 12/18 cmH2O settled I
+ * +11/+4 (6 cmH2O had not settled, I sd 209). */
+volatile float   g_blower_ctrl_ff_k_rpm_per_sqrtcmh = 5933.0f;
 
 /* RIG CALIBRATION - re-measure for a different mask / hose / vent.
  *
@@ -367,7 +375,7 @@ volatile float   g_blower_ctrl_ff_k_rpm_per_sqrtcmh = 6159.0f;
 /* 2026-10-02: 773, fitted together with K = 6056 - see the note at K.
  * (The 2026-10-01 refit to 1541 + 94.3*sp was made on a leaking air path and
  * is superseded.) */
-volatile float   g_blower_ctrl_ff_offset_rpm        = 667.0f;   /* 2026-10-07 (was 903) - see ff_k */
+volatile float   g_blower_ctrl_ff_offset_rpm        = 628.0f;   /* 2026-10-22 TKFan (was 667) - see ff_k */
 
 /* Pressure-dependent part of the same offset: rpm added per cmH2O of setpoint.
  *
