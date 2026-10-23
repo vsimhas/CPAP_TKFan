@@ -147,6 +147,16 @@ running on the CPAP during the trials was not independently verified against tha
 > - Totals CA 7 + Hyp 2, exactly as expected.
 > - Remaining: the Hyp-definition choice, residual harmless needles, and committing
 >   the CPAP work.
+>
+> **Status after the R13 build (23 October, see
+> [R13 result](#r13-result-whole-inspiration-shape-23-october)): flow limitation is
+> judged on the whole inspiration.**
+> - Plateau 90 %, M 90 % and plateau 60 % each score **one FL episode**, with the flag
+>   on 92 / 71 / 92 % of the block.
+> - Normal breathing reads flatness ≤ 0.66 against the new 0.72 line (it sat on the
+>   old 0.78 line before), and never turns FL on.
+> - Still open from 20 October: the raise rate (~0.5 cmH₂O/min on FL), the 120 s wait
+>   before lowering, and the FL amplitude arm on central hypopneas.
 
 ## Summary
 
@@ -1876,6 +1886,86 @@ No CA, Hyp or FOT.
      pair are tuning decisions for the team. The AirSense numbers above are a
      reference point, not a target.
 
+### R13 result: whole-inspiration shape (23 October)
+
+**Change (`apap_ctrl.c`):**
+
+- **One segment per inspiration.** A breath is now the stretch of patient flow above
+  `fl_seg_floor` (0 slm) that contains an EPR inspiration onset. It is judged when the
+  flow returns to the floor, so peak, flatness and the new dip all see the whole
+  inspiration.
+- **Two safeguards:**
+  - A breath already under way when the detectors are reset is skipped, e.g. the
+    first breath after FOT, which still carries the 4 Hz ripple.
+  - If an inspiration never returns to the floor (a flow offset), it is closed at the
+    next onset and judged on its peak only, as before R13.
+- **Flatness threshold re-tuned:** `fl_flat_ratio` 0.78 → **0.72** (For Her
+  0.74 → 0.70).
+- **New dip arm for M-type limitation.** The inspiration is kept in 40 ms bins. The dip
+  is the lowest bin between the peaks of the two halves of the breath, divided by the
+  smaller of those peaks. Below `fl_dip_ratio` (**0.93**; 0 = off) the breath is
+  flow-limited.
+- **Telemetry:** `therapy apap events` ends with `flat=` and `dip=` for the last
+  breath. New settings `apap set fl_dip_ratio` / `fl_seg_floor`.
+
+**Tuning:**
+
+- The thresholds come from replaying five logs from 12–20 October through a
+  line-for-line Python port of the new code.
+- On the bench, the firmware's per-breath flat and dip matched that port to
+  **±0.003**.
+
+| breaths (CPAP patient flow) | whole-inspiration flatness | dip |
+|---|---|---|
+| normal | 0.61–0.68 | ≈1.0 |
+| hypopneas 45–60 % | ≤ 0.68 | ≈1.0 |
+| plateau 90 % | 0.74–0.82 | ≈0.97 |
+| plateau 60 % | 0.73–0.77 | ≈0.97 |
+| M 90 % | 0.67–0.75 | median 0.86–0.90 |
+
+**Bench:** the `flshape` script on our CPAP (`apap_flshape.py`, which now also probes
+`apap set fl_dip_ratio`). AutoSet 8–12, EPR off, simulator first.
+
+| FL flag on, % of block | before R13 (20 Oct) | R13, dip 0.90 | **R13, dip 0.93** |
+|---|---|---|---|
+| normal breathing | none | none | **none** |
+| plateau 90 % | 91 % | 92 % | **92 %** |
+| M 90 % | 88 % (by accident) | 25 % (3 short episodes) | **71 %**: one episode, from 36 s in |
+| plateau 60 % | 77 % | 92 % | **92 %** |
+| FL episodes | 3 | 4 | **3** (one per block) |
+
+- **Dip 0.90 was too tight.** That day the M breaths' dip had a median of 0.90, so
+  only about half of them crossed the line. At 0.93, 22 of 25 M breaths are limited
+  (median 0.86).
+- **In the replay, 0.93 is the highest safe setting.** No normal or hypopnea block
+  turns FL on; at most 3/36 hypopnea and 1/745 normal breaths cross it, never 3 in a
+  row. At 0.95, false limited breaths begin to rise.
+- **Normal breathing on the 0.93 run:** flatness ≤ 0.66, dip ≥ 0.92. One breath
+  crossed 0.93, alone. The dip margin is thin: watch it on other breath shapes.
+- **The M block is now caught by its shape.** It reads 71 % rather than the 88 % it
+  got by accident before, because the first FL call came after the 3-breath
+  persistence.
+- **No other events:** no OA, CA, Hyp or FOT. Peak CPAP current 0.75 A.
+- **Pressure:** 8.0 → 9.9 cmH₂O over the run. The raise rate is unchanged
+  (~0.5 cmH₂O/min).
+
+**Limits:**
+
+- One rig: 2 L lung, the simulator's synthetic shapes. Not clinically validated.
+- **A +2 slm patient-flow offset** would make the shape arms miss limitation: the
+  segment then includes the expiratory pause. That fails safe, with no false raises.
+  Raising `fl_seg_floor` restores detection but makes round hypopneas read flat, so
+  keep it at 0; the protection is the R10 fix at the source.
+- The simulator dropped the plateau 60 % END event on the 0.93 run; that block is
+  labelled by the script clock.
+
+**Still open, unchanged by R13:**
+
+1. **The raise rate:** ~0.5 cmH₂O/min on FL, against ~3 for the AirSense.
+2. **Lowering** waits 120 s with no events.
+3. **The FL amplitude arm** (peak < 0.70 × baseline) still raises pressure on
+   central, unflattened hypopneas.
+
 ## Evidence
 
 - **Logs:** BreathSimulator session scratchpad,
@@ -1884,7 +1974,9 @@ No CA, Hyp or FOT.
   `T,`, `PH,` and status lines), `apnea_cap_T.csv`, `apnea_cap_apnea{1..6}.csv`, and
   the harness `apnea_capture.py`. R6 spike source: `spike_raw.pkl`,
   `spike_events.csv`, `spike_source.png`, and the harness `spike_source.py` with
-  `spike_analysis.py`. Trials 7, 7b–7g and 8: `apap_trial7{,b,c,d,e,f,g}_raw.pkl`, `apap_trial8{,b,c}_raw.pkl` (+ `apap_trial8{b,c}_diag.csv`), the threshold test `apap_hyp4555_raw.pkl` + `hyp_ratio.py`, the AirSense runs `airsense_8c_1637_raw.pkl` + `airsense_8c_1637_compare.png` and `airsense_flshape_1803_raw.pkl` + `airsense_flshape_1803_compare.png`; our CPAP on the same script `apap_flshape_raw.pkl` + `cpap_fl_report.py`, the pressure-lowering run `apap_lowering_raw.pkl` + `apap_lowering.log` (SD-card files in BreathSimulator `airsense_data/20261020`), and
+  `spike_analysis.py`. Trials 7, 7b–7g and 8: `apap_trial7{,b,c,d,e,f,g}_raw.pkl`, `apap_trial8{,b,c}_raw.pkl` (+ `apap_trial8{b,c}_diag.csv`), the threshold test `apap_hyp4555_raw.pkl` + `hyp_ratio.py`, the AirSense runs `airsense_8c_1637_raw.pkl` + `airsense_8c_1637_compare.png` and `airsense_flshape_1803_raw.pkl` + `airsense_flshape_1803_compare.png`; our CPAP on the same script `apap_flshape_raw.pkl` + `cpap_fl_report.py`, the pressure-lowering run `apap_lowering_raw.pkl` + `apap_lowering.log` (SD-card files in BreathSimulator `airsense_data/20261020`), the R13 runs in
+  BreathSimulator `pc_tools/apap_bench/runs/` (`pre_r13/` = 20 Oct baseline,
+  `r13_dip090/` = first R13 flash, `apap_flshape_*` = dip 0.93), and
   `apap_trial7{,b,c,d,e,f,g}.log`, plus `needle_count.py`, `leak_source.py` + `leak_analysis.py` (R9: `leak_raw.pkl`, `leak_breaths.csv`, `leak_source.png`), `total_source.py` + `total_analysis.py` (R10: `total_raw.pkl`, `total_breaths.csv`, `total_source.png`) and `epr_replay.py`, which replays the EPR breath FSM on
   the logged `T,` data. These are temporary and may be cleared.
 - **Summaries:** BreathSimulator project memory, `breathsim-apap-waveforms.md`.

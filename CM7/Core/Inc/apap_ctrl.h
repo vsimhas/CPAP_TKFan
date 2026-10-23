@@ -84,6 +84,7 @@ bool       Apap_IsRaiseBlockedByLeak(void);
 float      Apap_GetFlPeakBaselineSlm(void);
 float      Apap_GetFlLastPeakSlm(void);
 float      Apap_GetFlLastFlat(void);   /* insp mean/peak, 0–1 */
+float      Apap_GetFlLastDip(void);    /* R13: mid-insp notch, 1 = none */
 float      Apap_GetSnoreRmsSlm(void);
 uint32_t   Apap_GetStableMs(void);
 bool       Apap_IsLowering(void);

@@ -79,7 +79,27 @@ volatile uint8_t g_apap_fl_clear_breaths           = 2U;
 volatile float   g_apap_fl_raise_scale             = 0.50f;
 volatile float   g_apap_fl_min_peak_slm            = 4.0f;
 volatile float   g_apap_fl_baseline_alpha          = 0.25f;
-volatile float   g_apap_fl_flat_ratio              = 0.78f; /* mean/peak plateau */
+volatile float   g_apap_fl_flat_ratio              = 0.72f; /* mean/peak plateau */
+/* R13 (docs/APAP_FINDINGS_2026-10-12_breathsim.md): the flatness used to be
+ * accumulated only in the EPR inspiration phase, which ends at the 1.2 s
+ * max-hold, so a 2.5 s inspiration was judged on its rising half: normal
+ * breaths read 0.78-0.80 against the 0.78 line, and an M-shaped breath was
+ * caught only by accident. The shape features now cover the whole
+ * inspiration, from the flow rising through fl_seg_floor to its return
+ * there. Re-tuned by replaying the 20 Oct BreathSimulator logs (CPAP patient
+ * flow, whole inspiration, 5 runs): normal 0.61-0.68, hypopneas <= 0.68,
+ * plateau 60 % 0.73-0.77, plateau 90 % 0.74-0.82, M 90 % 0.67-0.75.
+ * The M shape is caught by its mid-inspiratory dip instead: the lowest flow
+ * between the peaks of the two halves over the smaller of those peaks
+ * (M 90 % median 0.87 on 20 Oct, 0.90 on 23 Oct; normal and hypopnea breaths
+ * ~1.0). Below fl_dip_ratio the breath counts as flow-limited; 0 disables the
+ * dip arm. 0.90 (first bench run, 23 Oct) sat on the M block's median and held
+ * the FL flag only 25 % of the block; 0.93 catches 24/25 M breaths in both
+ * runs, while no hypopnea or normal breathing turns FL on (at most 3/36
+ * hypopnea and 1/745 normal breaths cross it, never 3 in a row). The
+ * firmware's per-breath values matched the offline replay to +-0.003. */
+volatile float   g_apap_fl_dip_ratio               = 0.93f;
+volatile float   g_apap_fl_seg_floor_slm           = 0.0f;
 /* Finding 4: the baseline only updates on non-limited breaths, so one or
  * two large arousal breaths (1.5x) lifted it until normal breaths read as
  * "peak < 0.70 x baseline", could no longer update it, and held a false FL
@@ -201,6 +221,7 @@ volatile uint8_t  g_apap_fl_active                = 0U;
 volatile float    g_apap_fl_peak_baseline_slm     = 0.0f;
 volatile float    g_apap_fl_last_peak_slm         = 0.0f;
 volatile float    g_apap_fl_last_flat             = 0.0f; /* insp mean/peak */
+volatile float    g_apap_fl_last_dip              = 1.0f; /* R13: 1 = no notch */
 volatile uint8_t  g_apap_hyp_active               = 0U;
 volatile uint8_t  g_apap_snore_active             = 0U;
 volatile float    g_apap_snore_rms_slm            = 0.0f;
@@ -261,6 +282,20 @@ static float      s_fl_insp_sum_q = 0.0f;
 static uint32_t   s_fl_insp_n = 0U;
 static float      s_fl_last_flat = 0.0f;
 static uint32_t   s_since_insp_end_ms = 0U;   /* breath period for Hyp duration */
+/* R13: one segment per inspiration for the shape features. */
+#define FL_SEG_BIN_MS    40U
+#define FL_SEG_MAX_BINS  100U                  /* 4 s */
+static bool       s_fl_seg_active = false;
+static bool       s_fl_seg_armed = false;      /* flow seen at/below the floor */
+static bool       s_fl_seg_from_floor = false;
+static bool       s_fl_seg_confirmed = false;  /* EPR inspiration onset inside */
+static bool       s_fl_seg_overflow = false;
+static float      s_fl_seg_bins[FL_SEG_MAX_BINS];
+static uint32_t   s_fl_seg_nbins = 0U;
+static float      s_fl_seg_bin_sum = 0.0f;
+static uint32_t   s_fl_seg_bin_n = 0U;
+static uint32_t   s_fl_seg_bin_ms = 0U;
+static float      s_fl_last_dip = 1.0f;
 static float      s_resume_ref_slm = 0.0f;    /* baseline held at episode start */
 /* R2: one long hypopnea is one event - re-arm only after a breath that is
  * no longer hypopnea-limited. */
@@ -615,9 +650,22 @@ static void resetBreathDetectors(void)
     g_apap_fl_peak_baseline_slm = 0.0f;
     g_apap_fl_last_peak_slm = 0.0f;
     g_apap_fl_last_flat = 0.0f;
+    g_apap_fl_last_dip = 1.0f;
     s_fl_insp_sum_q = 0.0f;
     s_fl_insp_n = 0U;
     s_fl_last_flat = 0.0f;
+    s_fl_last_dip = 1.0f;
+    /* R13: a breath already under way is skipped - the next segment only
+     * starts once the flow has been at or below the floor. */
+    s_fl_seg_active = false;
+    s_fl_seg_armed = false;
+    s_fl_seg_from_floor = false;
+    s_fl_seg_confirmed = false;
+    s_fl_seg_overflow = false;
+    s_fl_seg_nbins = 0U;
+    s_fl_seg_bin_sum = 0.0f;
+    s_fl_seg_bin_n = 0U;
+    s_fl_seg_bin_ms = 0U;
 
     s_hyp_streak = 0U;
     s_hyp_limited_ms = 0U;
@@ -670,13 +718,51 @@ static void noteSnoreEdge(void)
     s_snore_was_active = s_snore_active;
 }
 
-static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms)
+static float flDipThreshold(void)
+{
+    return (g_apap_fl_dip_ratio > 0.0f) ? clampf(g_apap_fl_dip_ratio, 0.50f, 0.98f)
+                                        : 0.0f;   /* dip arm off */
+}
+
+static float segDipRatio(void)
+{
+    /* R13: M-type limitation, a mid-inspiratory notch between two humps:
+     * the lowest bin between the peaks of the two halves, over the smaller
+     * of those peaks. 1 = no notch (single-peaked or flat-topped). */
+    const uint32_t nb = s_fl_seg_nbins;
+    if (nb < 6U)
+    {
+        return 1.0f;
+    }
+    const uint32_t mid = nb / 2U;
+    uint32_t i1 = 0U;
+    for (uint32_t i = 1U; i < mid; i++)
+    {
+        if (s_fl_seg_bins[i] > s_fl_seg_bins[i1]) { i1 = i; }
+    }
+    uint32_t i2 = mid;
+    for (uint32_t i = mid + 1U; i < nb; i++)
+    {
+        if (s_fl_seg_bins[i] > s_fl_seg_bins[i2]) { i2 = i; }
+    }
+    float valley = s_fl_seg_bins[i1];
+    for (uint32_t i = i1 + 1U; i <= i2; i++)
+    {
+        if (s_fl_seg_bins[i] < valley) { valley = s_fl_seg_bins[i]; }
+    }
+    const float hump = fminf(s_fl_seg_bins[i1], s_fl_seg_bins[i2]);
+    return (hump > 0.5f) ? clampf(valley / hump, 0.0f, 1.0f) : 1.0f;
+}
+
+static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
+                               bool shape_ok)
 {
     const float min_peak = clampf(g_apap_fl_min_peak_slm, 1.0f, 30.0f);
     const float fl_ratio = clampf(g_apap_fl_ratio, 0.40f, 0.95f);
     const float hyp_ratio = clampf(g_apap_hyp_ratio, 0.20f, 0.80f);
     const float alpha = clampf(g_apap_fl_baseline_alpha, 0.05f, 0.75f);
     const float flat_thr = clampf(g_apap_fl_flat_ratio, 0.55f, 0.95f);
+    const float dip_thr = flDipThreshold();
     const uint8_t fl_need = (g_apap_fl_breaths_needed < 1U) ? 1U
                           : ((g_apap_fl_breaths_needed > 10U) ? 10U
                                                              : g_apap_fl_breaths_needed);
@@ -692,16 +778,21 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms)
     g_apap_fl_last_peak_slm = peak_slm;
 
     /* Independent flattening heuristic: insp mean/peak. Square/plateau
-     * waveforms sit near 1; peaked breaths sit nearer 0.5. */
+     * waveforms sit near 1; peaked breaths sit nearer 0.5. R13: over the
+     * whole inspiration; a breath without a clean segment (shape_ok false)
+     * is judged on its peak only, as flat 0 / dip 1. */
     {
         const float mean_q = (s_fl_insp_n > 0U)
                                  ? (s_fl_insp_sum_q / (float)s_fl_insp_n)
                                  : 0.0f;
-        const float flat = (peak_slm > 0.5f)
+        const float flat = (shape_ok && (peak_slm > 0.5f))
                                ? clampf(mean_q / peak_slm, 0.0f, 1.0f)
                                : 0.0f;
+        const float dip = shape_ok ? segDipRatio() : 1.0f;
         s_fl_last_flat = flat;
         g_apap_fl_last_flat = flat;
+        s_fl_last_dip = dip;
+        g_apap_fl_last_dip = dip;
     }
 
     if (!(peak_slm >= min_peak))
@@ -719,7 +810,8 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms)
 
     const bool fl_peak_drop = (peak_slm < (fl_ratio * s_fl_baseline_slm));
     const bool fl_flat = (s_fl_last_flat >= flat_thr);
-    const bool fl_limited = fl_peak_drop || fl_flat;
+    const bool fl_dip = (s_fl_last_dip < dip_thr);
+    const bool fl_limited = fl_peak_drop || fl_flat || fl_dip;
     const bool hyp_limited = (peak_slm < (hyp_ratio * s_fl_baseline_slm));
     if (!hyp_limited)
     {
@@ -809,49 +901,119 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms)
     g_apap_hyp_active = s_hyp_active ? 1U : 0U;
 }
 
+static void flSegStart(bool from_floor)
+{
+    s_fl_seg_active = true;
+    s_fl_seg_from_floor = from_floor;
+    s_fl_seg_confirmed = false;
+    s_fl_seg_overflow = false;
+    s_fl_seg_nbins = 0U;
+    s_fl_seg_bin_sum = 0.0f;
+    s_fl_seg_bin_n = 0U;
+    s_fl_seg_bin_ms = 0U;
+    s_fl_insp_peak_q = 0.0f;
+    s_fl_insp_sum_q = 0.0f;
+    s_fl_insp_n = 0U;
+    s_insp_ms = 0U;
+}
+
+static void flSegAccumulate(float q, uint32_t dt_ms)
+{
+    if (q > s_fl_insp_peak_q)
+    {
+        s_fl_insp_peak_q = q;
+    }
+    s_insp_ms += dt_ms;
+    s_fl_insp_sum_q += q;
+    if (s_fl_insp_n < 100000U)
+    {
+        s_fl_insp_n++;
+    }
+    if (s_fl_seg_nbins < FL_SEG_MAX_BINS)
+    {
+        s_fl_seg_bin_sum += q;
+        s_fl_seg_bin_n++;
+        s_fl_seg_bin_ms += dt_ms;
+        if (s_fl_seg_bin_ms >= FL_SEG_BIN_MS)
+        {
+            s_fl_seg_bins[s_fl_seg_nbins] = s_fl_seg_bin_sum / (float)s_fl_seg_bin_n;
+            s_fl_seg_nbins++;
+            s_fl_seg_bin_sum = 0.0f;
+            s_fl_seg_bin_n = 0U;
+            s_fl_seg_bin_ms = 0U;
+        }
+    }
+    else
+    {
+        s_fl_seg_overflow = true;   /* > 4 s: not one inspiration */
+    }
+}
+
+static void flSegFinish(void)
+{
+    /* Finding 2: the hypopnea's 10 s is wall-clock time, so pass the
+     * breath PERIOD (end of inspiration to end of inspiration), not the
+     * inspiratory time - that needed >= ~20 s of hypopnea at I:E 1:1
+     * (bench: 50 % scored only at the event's end, 55 % never). The
+     * first breath after a reset has no period yet (0 -> the old 3 s
+     * fallback in finalizeInspBreath); a gap longer than the breath
+     * window cannot be one breath, so it falls back too. */
+    const uint32_t cap_ms = (uint32_t)(clampf(g_apap_breath_window_s,
+                                              4.0f, 30.0f) * 1000.0f);
+    uint32_t period_ms = s_since_insp_end_ms;
+    if (period_ms > cap_ms) { period_ms = 0U; }
+    finalizeInspBreath(s_fl_insp_peak_q, period_ms,
+                       s_fl_seg_from_floor && !s_fl_seg_overflow);
+    s_insp_ms = 0U;
+    s_since_insp_end_ms = 0U;
+    s_fl_seg_active = false;
+}
+
 static void updateFlHypDetector(uint32_t dt_ms)
 {
     const EprPhase_t ph = Epr_GetPhase();
     const float q = Flow_GetPatientSlm()
                   - ((g_apap_rel_baseline_enable != 0U) ? Epr_GetFlowBaselineSlm()
                                                        : 0.0f);   /* R9 */
+    const float floor_slm = clampf(g_apap_fl_seg_floor_slm, 0.0f, 5.0f);
+    const bool onset = (ph == EPR_PHASE_INSPIRATION)
+                    && (s_fl_prev_phase != EPR_PHASE_INSPIRATION);
 
-    if (ph == EPR_PHASE_INSPIRATION)
+    /* R13: a breath is the flow segment above the floor that contains an
+     * EPR inspiration onset; it is judged when the flow returns to the
+     * floor, so peak, flatness and dip see the whole inspiration. A positive
+     * segment without an onset is noise, not a breath. */
+    if (!s_fl_seg_active && s_fl_seg_armed && (q > floor_slm))
     {
-        if (s_fl_prev_phase != EPR_PHASE_INSPIRATION)
-        {
-            s_fl_insp_peak_q = q;
-            s_insp_ms = 0U;
-            s_fl_insp_sum_q = 0.0f;
-            s_fl_insp_n = 0U;
-        }
-        else if (q > s_fl_insp_peak_q)
-        {
-            s_fl_insp_peak_q = q;
-        }
-        s_insp_ms += dt_ms;
-        s_fl_insp_sum_q += q;
-        if (s_fl_insp_n < 100000U)
-        {
-            s_fl_insp_n++;
-        }
+        flSegStart(true);
     }
-    else if (s_fl_prev_phase == EPR_PHASE_INSPIRATION)
+    if (onset)
     {
-        /* Finding 2: the hypopnea's 10 s is wall-clock time, so pass the
-         * breath PERIOD (end of inspiration to end of inspiration), not the
-         * inspiratory time - that needed >= ~20 s of hypopnea at I:E 1:1
-         * (bench: 50 % scored only at the event's end, 55 % never). The
-         * first breath after a reset has no period yet (0 -> the old 3 s
-         * fallback in finalizeInspBreath); a gap longer than the breath
-         * window cannot be one breath, so it falls back too. */
-        const uint32_t cap_ms = (uint32_t)(clampf(g_apap_breath_window_s,
-                                                  4.0f, 30.0f) * 1000.0f);
-        uint32_t period_ms = s_since_insp_end_ms;
-        if (period_ms > cap_ms) { period_ms = 0U; }
-        finalizeInspBreath(s_fl_insp_peak_q, period_ms);
-        s_insp_ms = 0U;
-        s_since_insp_end_ms = 0U;
+        if (s_fl_seg_active && s_fl_seg_confirmed)
+        {
+            /* The previous inspiration never returned to the floor (a flow
+             * offset): close it here on its peak alone, and take this one
+             * from its onset, as before R13. */
+            flSegFinish();
+        }
+        if (!s_fl_seg_active)
+        {
+            flSegStart(false);
+        }
+        s_fl_seg_confirmed = true;
+    }
+    if (s_fl_seg_active)
+    {
+        flSegAccumulate(q, dt_ms);
+    }
+    if (q <= floor_slm)
+    {
+        if (s_fl_seg_active && s_fl_seg_confirmed)
+        {
+            flSegFinish();
+        }
+        s_fl_seg_active = false;
+        s_fl_seg_armed = true;
     }
     if (s_since_insp_end_ms < 600000U) { s_since_insp_end_ms += dt_ms; }
 
@@ -959,6 +1121,14 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
                                   : 1.0f;
             fl_scale *= sev;
         }
+        else if (s_fl_last_dip < flDipThreshold())
+        {
+            /* R13: M-type notch; a dip of 0.5 is full severity. */
+            const float dip_thr = flDipThreshold();
+            const float sev = clampf((dip_thr - s_fl_last_dip) / (dip_thr - 0.5f),
+                                     0.25f, 1.0f);
+            fl_scale *= sev;
+        }
         else if ((s_fl_baseline_slm > 0.5f) && (g_apap_fl_last_peak_slm > 0.0f))
         {
             const float rel = g_apap_fl_last_peak_slm / s_fl_baseline_slm;
@@ -1030,7 +1200,9 @@ void Apap_Init(void)
     g_apap_fl_raise_scale = 0.50f;
     g_apap_fl_min_peak_slm = 4.0f;
     g_apap_fl_baseline_alpha = 0.25f;
-    g_apap_fl_flat_ratio = 0.78f;
+    g_apap_fl_flat_ratio = 0.72f;     /* R13 */
+    g_apap_fl_dip_ratio = 0.93f;
+    g_apap_fl_seg_floor_slm = 0.0f;
     g_apap_fl_baseline_reject_ratio = 1.40f;
     g_apap_baseline_restore_max_s = 120.0f;
     g_apap_ca_reclass_window_s = 30.0f;
@@ -1114,7 +1286,7 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
         g_apap_response_soft = 1U;
         g_apap_fl_breaths_needed = 2U;
         g_apap_fl_raise_scale = 0.55f;
-        g_apap_fl_flat_ratio = 0.74f;
+        g_apap_fl_flat_ratio = 0.70f;   /* R13: 0.72 - 0.02, as 0.78 - 0.04 was */
     }
     s_min_cmh2o = clampf(min_cmh2o, THERAPY_PRESS_MIN_CMH2O, THERAPY_PRESS_MAX_CMH2O);
     s_max_cmh2o = clampf(max_cmh2o, s_min_cmh2o + 0.5f, THERAPY_PRESS_MAX_CMH2O);
@@ -1232,6 +1404,7 @@ bool  Apap_IsRaiseBlockedByLeak(void)      { return (g_apap_raise_blocked_leak !
 float Apap_GetFlPeakBaselineSlm(void)      { return g_apap_fl_peak_baseline_slm; }
 float Apap_GetFlLastPeakSlm(void)          { return g_apap_fl_last_peak_slm; }
 float Apap_GetFlLastFlat(void)             { return g_apap_fl_last_flat; }
+float Apap_GetFlLastDip(void)              { return g_apap_fl_last_dip; }
 float Apap_GetSnoreRmsSlm(void)            { return g_apap_snore_rms_slm; }
 uint32_t Apap_GetStableMs(void)            { return g_apap_stable_ms; }
 bool  Apap_IsLowering(void)                { return (g_apap_lowering != 0U); }

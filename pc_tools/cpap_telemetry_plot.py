@@ -2607,7 +2607,9 @@ def main() -> int:
         "raise_rate_soft": "0.020",
         "raise_rate_her_scale": "0.75",
         "fl_ratio": "0.70",
-        "fl_flat_ratio": "0.78",
+        "fl_flat_ratio": "0.72",      # R13: whole-inspiration flatness
+        "fl_dip_ratio": "0.93",       # R13: M-shape notch; 0 = off
+        "fl_seg_floor": "0.0",
         "fl_baseline_reject": "1.40",
         "baseline_restore_max_s": "120",
         "ca_reclass_window_s": "30",
@@ -2872,6 +2874,9 @@ def main() -> int:
     add_apap_float(apap_frame, row, 0, "FL flat ratio", "fl_flat_ratio")
     add_apap_float(apap_frame, row, 1, "FL baseline reject x", "fl_baseline_reject")
     add_apap_float(apap_frame, row, 2, "Baseline restore max (s)", "baseline_restore_max_s")
+    row += 1
+    add_apap_float(apap_frame, row, 0, "FL dip ratio", "fl_dip_ratio")
+    add_apap_float(apap_frame, row, 1, "FL segment floor (slm)", "fl_seg_floor")
 
     row += 1
     ttk.Separator(apap_frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=6, sticky="ew", pady=8)

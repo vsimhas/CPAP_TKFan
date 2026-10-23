@@ -265,6 +265,8 @@ extern volatile float   g_apap_fl_raise_scale;
 extern volatile float   g_apap_fl_min_peak_slm;
 extern volatile float   g_apap_fl_baseline_alpha;
 extern volatile float   g_apap_fl_flat_ratio;
+extern volatile float   g_apap_fl_dip_ratio;
+extern volatile float   g_apap_fl_seg_floor_slm;
 extern volatile uint8_t g_apap_hyp_enable;
 extern volatile float   g_apap_hyp_ratio;
 extern volatile uint8_t g_apap_hyp_breaths_needed;
@@ -1254,6 +1256,16 @@ static int Telem_SetApapFloatParam(const char *name, float value)
     g_apap_fl_flat_ratio = value;
     return 1;
   }
+  if (strcmp(name, "fl_dip_ratio") == 0)
+  {
+    g_apap_fl_dip_ratio = value;
+    return 1;
+  }
+  if (strcmp(name, "fl_seg_floor") == 0)
+  {
+    g_apap_fl_seg_floor_slm = value;
+    return 1;
+  }
   if (strcmp(name, "hyp_ratio") == 0)
   {
     g_apap_hyp_ratio = value;
@@ -1753,7 +1765,7 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      "# APAP OA=%lu CA=%lu Hyp=%lu FL=%lu Snore=%lu "
                      "t_ms=%lu AHI=%.2f RDI=%.2f SI=%.2f "
                      "st=%s hyp=%u fl=%u sn=%u leak_blk=%u "
-                     "pol=%d pol_ev=%.1f pol_bad=%u\r\n",
+                     "pol=%d pol_ev=%.1f pol_bad=%u flat=%.2f dip=%.2f\r\n",
                      (unsigned long)Apap_GetEventOaCount(),
                      (unsigned long)Apap_GetEventCaCount(),
                      (unsigned long)Apap_GetEventHypCount(),
@@ -1772,7 +1784,10 @@ static void Telem_ProcessOneCommand(const char *cmd)
                       * wrong sign makes them silently score nothing. */
                      (int)g_epr_insp_polarity,
                      (double)g_epr_insp_polarity_evidence,
-                     (unsigned)g_epr_insp_polarity_mismatch);
+                     (unsigned)g_epr_insp_polarity_mismatch,
+                     /* R13: the last breath's whole-inspiration shape. */
+                     (double)Apap_GetFlLastFlat(),
+                     (double)Apap_GetFlLastDip());
     Telem_PushAck(cmd);
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
