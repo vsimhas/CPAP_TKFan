@@ -167,6 +167,13 @@ running on the CPAP during the trials was not independently verified against tha
 >   There is no hunting in the 2-minute gaps.
 > - Still open: the FL amplitude arm on central hypopneas. Ours also raises a little on
 >   plateau 60 %, where the AirSense drifts down.
+>
+> **Status after the central-hypopnea build (23 October, see
+> [Central vs obstructive hypopneas](#central-vs-obstructive-hypopneas-23-october)):
+> round hypopneas no longer raise pressure.**
+> - Trial 8c script: CA 7, Hyp 2, **FL 0**. The target stayed at **8.00 cmH₂O
+>   throughout**, as on the AirSense; it reached 9.97 before.
+> - Flattened (obstructive) hypopneas still score Hyp + FL and raise pressure.
 
 ## Summary
 
@@ -2043,8 +2050,82 @@ target onset → block end → end + 60 s:
 
 **Limits:** one rig, synthetic breaths; not clinically validated.
 
-**Still open:** the FL amplitude arm (peak < 0.70 × baseline) still raises pressure on
-central, unflattened hypopneas. The AirSense does not.
+**Still open:** ~~the FL amplitude arm (peak < 0.70 × baseline) still raises pressure
+on central, unflattened hypopneas. The AirSense does not.~~ Fixed, see the next
+section.
+
+### Central vs obstructive hypopneas (23 October)
+
+**Problem (AirSense reference run, 20 October):**
+
+- On round, low-effort (central) hypopneas the AirSense held 8.0 cmH₂O and scored no
+  flow limitation.
+- Ours raised to ~10 cmH₂O through two paths in `apap_ctrl.c`:
+  1. **The FL amplitude arm** (peak < `fl_ratio` 0.70 × baseline) called any reduced
+     breath flow-limited.
+  2. **Every scored hypopnea raised pressure** (`hyp_raise_scale`), whatever its
+     shape.
+
+**Change:**
+
+- **FL on shape only.**
+  - `fl_amp_arm` (default 0) takes the amplitude arm out of the FL call; flatness and
+    dip remain.
+  - A reduced breath still stays out of the FL/Hyp baseline, exactly as before, so
+    hypopnea detection is unchanged.
+  - `apap set fl_amp_arm 1` restores the old rule.
+- **Hypopneas classed by shape.** Each hypopnea counts its limited breaths and how
+  many of them are shape-limited (flatness ≥ 0.72 or dip < 0.93).
+  - **Obstructive**, when **more than** `hyp_raise_shape_frac` (0.5) of them are
+    shape-limited: it raises as before.
+  - **Central** otherwise: it is scored (it counts in the AHI) but **holds the
+    pressure**. There is no raise, and the lowering wait restarts after it.
+  - The verdict is latched for the event's hold and saved/restored across short
+    NO_BREATH visits, like the other Hyp state.
+  - `hyp_raise_shape_frac 0` = raise on every hypopnea, as before.
+- **Strictly more than half, not "at least half".** The first build used "≥".
+  - On the trial 8c run, the round 60 % hypopnea had one notched breath among its first
+    two. The dip arm is noisy on small breaths: dip 0.84 at 49 % of normal peak.
+  - It was briefly obstructive and raised 0.18 cmH₂O in ~5 s.
+  - A replay of both runs under "more than half":
+    - every round hypopnea is central from the start (≤ 2 of 5 breaths
+      shape-limited);
+    - the flattened ones stay obstructive, the first one from its 3rd breath.
+- **Telemetry and GUI:** `apap set fl_amp_arm`, `apap set hyp_raise_shape_frac`, and
+  GUI fields.
+
+**New harness `apap_ohyp.py`** (built from `apap_flshape.py`).
+
+- Script: normal 90 | 55 % hypopnea 40 **flattened** | normal 90 | 55 % hypopnea 40
+  **round** | normal 90 | 55 % hypopnea 40 **flattened** | normal 90.
+- "Flattened" = `sim set flattening 0.9` for the event, switched by the script clock.
+- It probes `apap set hyp_raise_shape_frac 0.5`.
+
+**Bench, strict-majority build:**
+
+| check | before this change | **now** | AirSense 11 |
+|---|---|---|---|
+| trial 8c (7 central apneas, round 50/55/60 % hypopneas): scored | CA 7, Hyp 2, FL 3 | **CA 7, Hyp 2, FL 0** | CA 7 |
+| trial 8c: pressure target | 8.0 → 9.97 | **8.00 throughout** | 8.0 throughout |
+| ohyp, flattened #1 | — | Hyp + FL, **8.00 → 9.07** (raised) | — |
+| ohyp, round | — | Hyp, **8.78 → 8.60** (held; max 8.79) | — |
+| ohyp, flattened #2 | — | Hyp + FL, **8.34 → 8.97** (raised) | — |
+
+- **ohyp totals:** Hyp 3, FL 2, no OA/CA. The first ("≥") build gave the same
+  scores, with 8.00 → 8.94 / 8.66 → 8.53 / 8.21 → 9.01.
+- **trial 8c:** AHI 31.9, as before. Peak current 1.10 A in FOT; breathing max 0.69 A.
+- **Breath shape on the CPAP:**
+  - round hypopnea breaths: flatness 0.59–0.68, dip ≥ 0.96;
+  - flattened hypopnea breaths: flatness 0.70–0.81. The simulator delivers only
+    0.72–0.78 at `flattening 0.9` on these small breaths.
+
+**Limits:**
+
+- **One rig, synthetic breaths;** not clinically validated.
+- **Mild flattening:** a hypopnea whose breaths are only mildly flattened (flatness
+  below ~0.72 on most of them) is classed central and gets no raise.
+- **No obstructive apnea yet:** the chamber-squeezed obstructive apnea has not been
+  tested, on ours or on the AirSense.
 
 ## Evidence
 
@@ -2057,7 +2138,10 @@ central, unflattened hypopneas. The AirSense does not.
   `spike_analysis.py`. Trials 7, 7b–7g and 8: `apap_trial7{,b,c,d,e,f,g}_raw.pkl`, `apap_trial8{,b,c}_raw.pkl` (+ `apap_trial8{b,c}_diag.csv`), the threshold test `apap_hyp4555_raw.pkl` + `hyp_ratio.py`, the AirSense runs `airsense_8c_1637_raw.pkl` + `airsense_8c_1637_compare.png` and `airsense_flshape_1803_raw.pkl` + `airsense_flshape_1803_compare.png`; our CPAP on the same script `apap_flshape_raw.pkl` + `cpap_fl_report.py`, the pressure-lowering run `apap_lowering_raw.pkl` + `apap_lowering.log` (SD-card files in BreathSimulator `airsense_data/20261020`), the R13 runs in
   BreathSimulator `pc_tools/apap_bench/runs/` (`pre_r13/` = 20 Oct baseline,
   `r13_dip090/` = first R13 flash, `r13_dip093/` = dip 0.93), the raise / lowering
-  runs (`apap_lowering_*` and `apap_flshape_*` in the same folder), and
+  runs (`apap_lowering_*` and `apap_flshape_*` in the same folder), the central /
+  obstructive hypopnea runs (`apap_ohyp_*` and `apap_trial8c_*` = strict-majority build,
+  `central_ge/` = first "≥" build, `pre_central/` = the trial 8c baseline before it),
+  and
   `apap_trial7{,b,c,d,e,f,g}.log`, plus `needle_count.py`, `leak_source.py` + `leak_analysis.py` (R9: `leak_raw.pkl`, `leak_breaths.csv`, `leak_source.png`), `total_source.py` + `total_analysis.py` (R10: `total_raw.pkl`, `total_breaths.csv`, `total_source.png`) and `epr_replay.py`, which replays the EPR breath FSM on
   the logged `T,` data. These are temporary and may be cleared.
 - **Summaries:** BreathSimulator project memory, `breathsim-apap-waveforms.md`.

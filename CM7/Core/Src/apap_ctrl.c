@@ -195,6 +195,19 @@ volatile float   g_apap_hyp_hold_s                 = 20.0f;  /* raise window aft
  * baseline (the FL line), i.e. breathing clearly back to normal. */
 volatile float   g_apap_hyp_rearm_ratio            = 0.70f;
 volatile uint8_t g_apap_hyp_rearm_breaths          = 2U;
+/* 23 Oct (AirSense 11 reference run, 20 Oct): on round, low-effort - i.e.
+ * central - hypopneas the AirSense held 8.0 cmH2O and scored no FL, while
+ * ours raised to ~10 through two paths:
+ *  - the FL amplitude arm (peak < fl_ratio x baseline) called any reduced
+ *    breath flow-limited. FL is now called on shape only (flatness / dip);
+ *    the arm can be put back with fl_amp_arm 1. A reduced breath still
+ *    holds the FL/Hyp baseline, exactly as before.
+ *  - every scored hypopnea raised. A hypopnea now raises only when more than
+ *    hyp_raise_shape_frac of its limited breaths are shape-limited
+ *    (obstructive); a round one is scored and holds the pressure (no raise,
+ *    and the lowering wait restarts). 0 = raise on every hypopnea. */
+volatile uint8_t g_apap_fl_amp_arm_enable          = 0U;
+volatile float   g_apap_hyp_raise_shape_frac       = 0.50f;
 
 /* Snore: HF residual RMS on patient raw vs breath-band flow. */
 volatile uint8_t g_apap_snore_enable               = 1U;
@@ -315,6 +328,10 @@ static float      s_resume_ref_slm = 0.0f;    /* baseline held at episode start 
  * no longer hypopnea-limited. */
 static bool       s_hyp_need_recovery = false;
 static uint8_t    s_hyp_rearm_n = 0U;   /* R12: consecutive recovered breaths */
+/* Central vs obstructive hypopnea: shape-limited share of its breaths. */
+static uint8_t    s_hyp_ev_n = 0U;
+static uint8_t    s_hyp_ev_shape_n = 0U;
+static bool       s_hyp_obstructive = false;
 /* R4 */
 static bool       s_apnea_need_recovery = false;
 static bool       s_episode_scored_ca = false;
@@ -340,6 +357,9 @@ static uint32_t   s_save_hyp_limited_ms = 0U;
 static bool       s_save_hyp_active = false;
 static uint32_t   s_save_hyp_hold_ms = 0U;
 static bool       s_save_hyp_need_recovery = false;
+static uint8_t    s_save_hyp_ev_n = 0U;
+static uint8_t    s_save_hyp_ev_shape_n = 0U;
+static bool       s_save_hyp_obstructive = false;
 
 static float clampf(float v, float lo, float hi)
 {
@@ -622,6 +642,9 @@ static void restoreDetectorsAfterEpisode(void)
         s_hyp_active = s_save_hyp_active;
         s_hyp_hold_ms = s_save_hyp_hold_ms;
         s_hyp_need_recovery = s_save_hyp_need_recovery;
+        s_hyp_ev_n = s_save_hyp_ev_n;
+        s_hyp_ev_shape_n = s_save_hyp_ev_shape_n;
+        s_hyp_obstructive = s_save_hyp_obstructive;
         g_apap_hyp_active = s_hyp_active ? 1U : 0U;
     }
 }
@@ -687,6 +710,9 @@ static void resetBreathDetectors(void)
     s_hyp_hold_ms = 0U;
     s_hyp_need_recovery = false;
     s_hyp_rearm_n = 0U;
+    s_hyp_ev_n = 0U;
+    s_hyp_ev_shape_n = 0U;
+    s_hyp_obstructive = false;
     g_apap_hyp_active = 0U;
 
     s_snore_prev_q = 0.0f;
@@ -825,7 +851,12 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
     const bool fl_peak_drop = (peak_slm < (fl_ratio * s_fl_baseline_slm));
     const bool fl_flat = (s_fl_last_flat >= flat_thr);
     const bool fl_dip = (s_fl_last_dip < dip_thr);
-    const bool fl_limited = fl_peak_drop || fl_flat || fl_dip;
+    const bool fl_shape = fl_flat || fl_dip;
+    /* FL on shape only unless the amplitude arm is enabled; a reduced breath
+     * still keeps out of the baseline either way. */
+    const bool fl_limited = fl_shape
+                         || (fl_peak_drop && (g_apap_fl_amp_arm_enable != 0U));
+    const bool baseline_hold = fl_shape || fl_peak_drop;
     const bool hyp_limited = (peak_slm < (hyp_ratio * s_fl_baseline_slm));
     if (!hyp_limited)
     {
@@ -844,6 +875,9 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         {
             if (s_fl_good_streak < 255U) { s_fl_good_streak++; }
             s_fl_streak = 0U;
+        }
+        if (!baseline_hold)
+        {
             const float rej = clampf(g_apap_fl_baseline_reject_ratio, 0.0f, 4.0f);
             const bool arousal_sized = (rej >= 1.05f)
                                     && (peak_slm > (rej * s_fl_baseline_slm));
@@ -866,6 +900,19 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         {
             s_hyp_rearm_n = 0U;   /* R12 */
             if (s_hyp_streak < 255U) { s_hyp_streak++; }
+            if (s_hyp_ev_n < 255U)
+            {
+                s_hyp_ev_n++;
+                if (fl_shape) { s_hyp_ev_shape_n++; }
+            }
+            {
+                /* Strictly more than the fraction: the dip arm is noisy on
+                 * small breaths, and a round 60 % hypopnea with 1 notched
+                 * breath of its first 2 raised 0.18 cmH2O under ">=". */
+                const float need = clampf(g_apap_hyp_raise_shape_frac, 0.0f, 1.0f);
+                s_hyp_obstructive = (need <= 0.0f)
+                    || ((float)s_hyp_ev_shape_n > (need * (float)s_hyp_ev_n));
+            }
             s_hyp_limited_ms += (approx_breath_ms > 0U) ? approx_breath_ms : 3000U;
             if ((s_hyp_streak >= hyp_need) && (s_hyp_limited_ms >= hyp_need_ms)
                 && !s_hyp_active && !s_hyp_need_recovery)
@@ -887,6 +934,8 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         {
             s_hyp_streak = 0U;
             s_hyp_limited_ms = 0U;
+            s_hyp_ev_n = 0U;         /* next event counts afresh; the verdict */
+            s_hyp_ev_shape_n = 0U;   /* stays latched for this one's hold */
             /* R12: re-arm only once breathing is clearly back to normal. */
             const float rearm_ratio = clampf(g_apap_hyp_rearm_ratio, hyp_ratio, 1.0f);
             const uint8_t rearm_need = (g_apap_hyp_rearm_breaths < 1U) ? 1U
@@ -1116,8 +1165,10 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
     g_apap_lowering = 0U;
     (void)raiseAllowed(); /* refresh leak flag */
 
-    /* Priority: hypopnea > FL > snore > stable lower. */
-    if ((g_apap_hyp_enable != 0U) && s_hyp_active)
+    /* Priority: obstructive hypopnea > FL > snore > central-hypopnea hold >
+     * stable lower. */
+    const bool hyp_on = (g_apap_hyp_enable != 0U) && s_hyp_active;
+    if (hyp_on && s_hyp_obstructive)
     {
         applyRaise(g_apap_hyp_raise_scale, dt_s);
         return;
@@ -1157,6 +1208,13 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
                               ? clampf((rms - thr) / thr, 0.25f, 1.0f)
                               : 1.0f;
         applyRaise(g_apap_snore_raise_scale * sev, dt_s);
+        return;
+    }
+    if (hyp_on)
+    {
+        /* Central (round) hypopnea: scored, but no raise - and no lowering
+         * through it either; the wait starts again once it is over. */
+        g_apap_stable_ms = 0U;
         return;
     }
 
@@ -1229,6 +1287,8 @@ void Apap_Init(void)
     g_apap_hyp_hold_s = 20.0f;
     g_apap_hyp_rearm_ratio = 0.70f;   /* R12 */
     g_apap_hyp_rearm_breaths = 2U;
+    g_apap_fl_amp_arm_enable = 0U;      /* FL on shape only */
+    g_apap_hyp_raise_shape_frac = 0.50f;
     g_apap_snore_enable = 1U;
     g_apap_snore_rms_thresh_slm = 0.35f;
     g_apap_snore_on_s = 1.5f;
@@ -1566,6 +1626,9 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
             s_save_hyp_active = s_hyp_active;
             s_save_hyp_hold_ms = s_hyp_hold_ms;
             s_save_hyp_need_recovery = s_hyp_need_recovery;
+            s_save_hyp_ev_n = s_hyp_ev_n;
+            s_save_hyp_ev_shape_n = s_hyp_ev_shape_n;
+            s_save_hyp_obstructive = s_hyp_obstructive;
             s_episode_reached_fot = false;
             s_episode_scored_ca = false;
             {

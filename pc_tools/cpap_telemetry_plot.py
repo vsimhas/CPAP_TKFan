@@ -2632,6 +2632,7 @@ def main() -> int:
         "hyp_min_duration_s": "10.0",
         "hyp_raise_scale": "0.70",
         "hyp_hold_s": "20.0",
+        "hyp_raise_shape_frac": "0.50",   # raise only on shape-limited (obstructive) Hyp
         "snore_rms_thresh": "0.35",
         "snore_on_s": "1.5",
         "snore_off_s": "2.0",
@@ -2644,6 +2645,7 @@ def main() -> int:
         "fl_breaths_needed": "3",
         "fl_clear_breaths": "2",
         "hyp_breaths_needed": "2",
+        "fl_amp_arm": "0",            # 0 = FL on shape only (central hypopneas)
     }
     apap_float_vars = {k: tk.StringVar(value=v) for k, v in apap_float_defaults.items()}
     apap_int_vars = {k: tk.StringVar(value=v) for k, v in apap_int_defaults.items()}
@@ -2877,6 +2879,7 @@ def main() -> int:
     row += 1
     add_apap_float(apap_frame, row, 0, "FL dip ratio", "fl_dip_ratio")
     add_apap_float(apap_frame, row, 1, "FL segment floor (slm)", "fl_seg_floor")
+    add_apap_int(apap_frame, row, 2, "FL amplitude arm (0/1)", "fl_amp_arm")
 
     row += 1
     ttk.Separator(apap_frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=6, sticky="ew", pady=8)
@@ -2891,6 +2894,7 @@ def main() -> int:
     row += 1
     add_apap_float(apap_frame, row, 0, "Hyp raise scale", "hyp_raise_scale")
     add_apap_float(apap_frame, row, 1, "Hyp hold (s)", "hyp_hold_s")
+    add_apap_float(apap_frame, row, 2, "Hyp raise shape frac", "hyp_raise_shape_frac")
 
     row += 1
     ttk.Separator(apap_frame, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=6, sticky="ew", pady=8)
