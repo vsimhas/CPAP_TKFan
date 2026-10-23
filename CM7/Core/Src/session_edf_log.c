@@ -16,6 +16,7 @@
 #include "leak_estimator.h"
 #include "main.h"
 #include "ff.h"
+#include "rtc_clock.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -245,6 +246,28 @@ void SessionEdf_SetDateTime(uint8_t yy, uint8_t mo, uint8_t dd,
     s_hh = (hh > 23U) ? 0U : hh;
     s_mi = (mi > 59U) ? 0U : mi;
     s_ss = (ss > 59U) ? 0U : ss;
+    /* Checklist #66: the same command sets the RTC, so the clock keeps
+     * running across sessions and resets. */
+    {
+        const RtcDateTime_t dt = { s_yy, s_mo, s_dd, s_hh, s_mi, s_ss };
+        (void)RtcClock_Set(&dt);
+    }
+}
+
+/* Session start time from the RTC when it runs; otherwise the last value
+ * set over USB (or the 2026-01-01 default), as before the RTC. */
+static void latchSessionStart(void)
+{
+    RtcDateTime_t dt;
+    if (RtcClock_Get(&dt))
+    {
+        s_yy = dt.yy;
+        s_mo = dt.mo;
+        s_dd = dt.dd;
+        s_hh = dt.hh;
+        s_mi = dt.mi;
+        s_ss = dt.ss;
+    }
 }
 
 static const char* monthAbbrev(uint8_t mo)
@@ -377,6 +400,7 @@ static bool openSessionFile(void)
         return false;
     }
 
+    latchSessionStart();
     if (!pickSessionPath())
     {
         setErr(0x2000U | (uint32_t)FR_DENIED);

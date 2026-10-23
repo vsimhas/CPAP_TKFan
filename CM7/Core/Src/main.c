@@ -48,6 +48,7 @@
 #include "leak_estimator.h"
 #include "therapy.h"
 #include "session_edf_log.h"
+#include "rtc_clock.h"
 #include "physiology_telem.h"
 #include "safety_supervisor.h"
 /* USER CODE END Includes */
@@ -1273,6 +1274,9 @@ int main(void)
    * lines are buffered until a terminal is attached. */
   Dbg_Init();
   Telem_Init();
+  /* RTC calendar (checklist #66): starts the LSE here; SelfTestTask's
+   * RtcClock_Service() finishes the bring-up without blocking boot. */
+  RtcClock_Init();
   EspBridge_Init();
   DBG_I("SYS", "CM7 boot reached USER CODE 2, sysclk=%lu Hz",
         (unsigned long)HAL_RCC_GetSysClockFreq());
@@ -2868,6 +2872,8 @@ static void SelfTestTask(void *argument)
     {
       sd_dummy_done = 1U;
     }
+
+    RtcClock_Service();
 
     /* FatFs session logger — never runs in SensorTask / Therapy_Start. */
     SessionEdf_Service();

@@ -1042,6 +1042,11 @@
               <FilePath>..\CM7\Core\Src\session_edf_log.c</FilePath>
             </File>
             <File>
+              <FileName>rtc_clock.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\rtc_clock.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4908,6 +4913,11 @@
               <FileName>session_edf_log.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\session_edf_log.c</FilePath>
+            </File>
+            <File>
+              <FileName>rtc_clock.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\rtc_clock.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>

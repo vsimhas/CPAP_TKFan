@@ -2660,7 +2660,12 @@ def main() -> int:
         edf_ss_var.set(f"{n.second:02d}")
 
     def apply_edf_settings() -> None:
+        # The CPAP keeps time in its RTC now, so enabling EDF must not also
+        # push the (possibly stale) date fields - use "Set RTC" for that.
         send(f"therapy edf enable {1 if edf_enable_var.get() else 0}")
+        send("therapy edf status")
+
+    def set_rtc_from_fields() -> None:
         try:
             yy = int(edf_yy_var.get())
             mo = int(edf_mo_var.get())
@@ -2669,10 +2674,17 @@ def main() -> int:
             mi = int(edf_mi_var.get())
             ss = int(edf_ss_var.get())
         except ValueError:
-            cmd_status.set("Invalid EDF datetime field")
+            cmd_status.set("Invalid RTC date/time field")
             return
-        send(f"therapy edf datetime {yy} {mo} {dd} {hh} {mi} {ss}")
-        send("therapy edf status")
+        send(f"rtc set {yy} {mo} {dd} {hh} {mi} {ss}")
+        send("rtc status")
+
+    def set_rtc_to_pc_clock() -> None:
+        fill_edf_datetime_now()
+        set_rtc_from_fields()
+
+    def query_rtc() -> None:
+        send("rtc status")
 
     def query_edf_status() -> None:
         send("therapy edf status")
@@ -2761,6 +2773,15 @@ def main() -> int:
     )
     ttk.Button(edf_frame, text="Query EDF Status", command=query_edf_status).grid(
         row=3, column=3, columnspan=2, sticky="w", pady=6
+    )
+    ttk.Button(edf_frame, text="Set RTC to PC clock", command=set_rtc_to_pc_clock).grid(
+        row=3, column=5, sticky="w", padx=8, pady=6
+    )
+    ttk.Button(edf_frame, text="Set RTC (fields)", command=set_rtc_from_fields).grid(
+        row=3, column=6, sticky="w", pady=6
+    )
+    ttk.Button(edf_frame, text="Query RTC", command=query_rtc).grid(
+        row=3, column=7, sticky="w", padx=8, pady=6
     )
     ttk.Label(edf_frame, textvariable=edf_status_var, wraplength=900).grid(
         row=4, column=0, columnspan=8, sticky="w", pady=(4, 0)

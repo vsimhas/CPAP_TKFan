@@ -28,6 +28,7 @@
 #include "bench_playback.h"
 #include "physiology_telem.h"
 #include "session_edf_log.h"
+#include "rtc_clock.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1892,6 +1893,44 @@ static void Telem_ProcessOneCommand(const char *cmd)
     SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
                            (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* RTC calendar (checklist #66). `rtc set` is the same as
+   * `therapy edf datetime`; both set the RTC and the EDF fallback. */
+  if (strncmp(cmd, "rtc set ", 8U) == 0)
+  {
+    unsigned yy = 0, mo = 0, dd = 0, hh = 0, mi = 0, ss = 0;
+    if ((sscanf(cmd + 8, "%u %u %u %u %u %u",
+                &yy, &mo, &dd, &hh, &mi, &ss) != 6)
+        || (yy > 99U) || (mo < 1U) || (mo > 12U) || (dd < 1U) || (dd > 31U)
+        || (hh > 23U) || (mi > 59U) || (ss > 59U))
+    {
+      Telem_PushErr("rtc set YY MM DD HH MI SS");
+      return;
+    }
+    SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
+                           (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
+    Telem_PushAck(cmd);
+    return;
+  }
+
+  if (strcmp(cmd, "rtc status") == 0)
+  {
+    char line[112];
+    RtcDateTime_t dt = { 0U, 0U, 0U, 0U, 0U, 0U };
+    const bool run = RtcClock_Get(&dt);
+    const int n = snprintf(line, sizeof(line),
+                           "# rtc src=%s run=%u valid=%u now=20%02u-%02u-%02u %02u:%02u:%02u\r\n",
+                           RtcClock_GetSourceName(), run ? 1U : 0U,
+                           RtcClock_IsTimeValid() ? 1U : 0U,
+                           (unsigned)dt.yy, (unsigned)dt.mo, (unsigned)dt.dd,
+                           (unsigned)dt.hh, (unsigned)dt.mi, (unsigned)dt.ss);
+    Telem_PushAck(cmd);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
     return;
   }
 

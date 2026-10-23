@@ -56,10 +56,17 @@ Practical paths:
 
 1. Format the SD card as **FAT32** on a PC (not exFAT if possible).
 2. Insert card; wait for SD self-test OK.
-3. Optionally set wall time (no RTC on board):
+3. Set the clock once (GUI: "Set RTC to PC clock"). The CM7 RTC keeps it
+   across resets, and across power cycles with a battery on VBAT; each session
+   is stamped from it:
    ```
-   therapy edf datetime 26 08 19 22 30 00
+   rtc set 26 08 19 22 30 00
+   rtc status
    ```
+   `rtc status` prints `src=` LSE (32.768 kHz crystal) or LSI (internal,
+   about +-5 %: reset the clock now and then), `valid=1` once the time has
+   been set since the backup domain was last lost (until then the clock
+   counts from 2026-01-01), and `now=`.
 4. Enable logging (off by default so USB telemetry is never blocked by FatFs):
    ```
    therapy edf enable 1
@@ -77,7 +84,9 @@ Practical paths:
 |---------|--------|
 | `therapy edf status` | Enable/state/path/records/error |
 | `therapy edf enable 0\|1` | Disable/enable auto-log on therapy start |
-| `therapy edf datetime YY MM DD HH MI SS` | Header start time |
+| `therapy edf datetime YY MM DD HH MI SS` | Sets the RTC (same as `rtc set`) |
+| `rtc set YY MM DD HH MI SS` | Sets the RTC; sessions are stamped from it |
+| `rtc status` | Clock source, running, valid, current date/time |
 
 ## Status fields
 
