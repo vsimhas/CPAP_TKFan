@@ -2625,7 +2625,7 @@ def main() -> int:
         "leak_freeze_min_breaths": "5",
         "leak_freeze_max_s": "60",
         "breath_notch": "1",
-        "fl_raise_scale": "0.50",
+        "fl_raise_scale": "1.00",
         "fl_min_peak": "4.0",
         "fl_baseline_alpha": "0.25",
         "hyp_ratio": "0.50",
@@ -2637,8 +2637,8 @@ def main() -> int:
         "snore_off_s": "2.0",
         "snore_raise_scale": "0.35",
         "snore_hp_hz": "20.0",
-        "lower_rate": "0.008",
-        "stable_before_lower_s": "120.0",
+        "lower_rate": "0.005",
+        "stable_before_lower_s": "20.0",
     }
     apap_int_defaults = {
         "fl_breaths_needed": "3",

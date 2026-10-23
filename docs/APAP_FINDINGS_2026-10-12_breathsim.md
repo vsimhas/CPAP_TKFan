@@ -157,6 +157,16 @@ running on the CPAP during the trials was not independently verified against tha
 >   old 0.78 line before), and never turns FL on.
 > - Still open from 20 October: the raise rate (~0.5 cmH₂O/min on FL), the 120 s wait
 >   before lowering, and the FL amplitude arm on central hypopneas.
+>
+> **Status after the raise / lowering build (23 October, see
+> [Raise rate and lowering wait](#raise-rate-and-lowering-wait-23-october)): titration
+> now follows the AirSense 11 on the flattened-breath script.**
+> - On FL the target rises at ~2–3 cmH₂O/min (was ~0.5) and reaches the 12 cmH₂O max
+>   inside the plateau 90 % block, as the AirSense does.
+> - Lowering starts ~20 s after FL clears (was 120 s), at 0.3 cmH₂O/min (was 0.48).
+>   There is no hunting in the 2-minute gaps.
+> - Still open: the FL amplitude arm on central hypopneas. Ours also raises a little on
+>   plateau 60 %, where the AirSense drifts down.
 
 ## Summary
 
@@ -1961,10 +1971,80 @@ No CA, Hyp or FOT.
 
 **Still open, unchanged by R13:**
 
-1. **The raise rate:** ~0.5 cmH₂O/min on FL, against ~3 for the AirSense.
-2. **Lowering** waits 120 s with no events.
+1. ~~**The raise rate:** ~0.5 cmH₂O/min on FL, against ~3 for the AirSense.~~ Fixed,
+   see the next section.
+2. ~~**Lowering** waits 120 s with no events.~~ Fixed, see the next section.
 3. **The FL amplitude arm** (peak < 0.70 × baseline) still raises pressure on
    central, unflattened hypopneas.
+
+### Raise rate and lowering wait (23 October)
+
+**Why it was slow (`apap_ctrl.c`, `applyMonitorTitration`):**
+
+- **Raise.** The FL raise was `raiseRate()` (standard 0.05 cmH₂O/s, ~3/min) ×
+  `fl_raise_scale` 0.50 × a shape severity.
+  - The severity was measured over the whole span from the threshold up to 1.0.
+  - A plateau at flatness 0.80 against the 0.72 line therefore scored only 0.29, and
+    the M dip scored about the same. Both sit at the 0.25 floor.
+  - The net rise was ~0.4–0.5 cmH₂O/min.
+- **Lowering.** It began only after `stable_before_lower_s` 120 s with no FL, Hyp or
+  snore, then ran at 0.008 cmH₂O/s (0.48/min).
+  - Every gap in an eventful script was ≤ 120 s, so the target could only ratchet up.
+
+**Change:**
+
+| setting | before | now |
+|---|---|---|
+| `fl_raise_scale` (For Her as well) | 0.50 (For Her 0.55) | **1.00**; For Her stays gentler via its soft response and her scale |
+| FL shape severity | (shape − threshold) / (span to 1.0) | (shape − threshold) / **0.10** (`FL_SEV_SPAN`), for flatness and dip alike |
+| `stable_before_lower_s` | 120 s (clamp 30–600) | **20 s** (clamp 5–600) |
+| `lower_rate` | 0.008 cmH₂O/s (0.48/min) | **0.005** (0.30/min) |
+
+- Expected raise: plateau 90 % (flat ~0.80) ~2.4 cmH₂O/min, M 90 % (dip ~0.86) ~2.1,
+  plateau 60 % (flat ~0.75) ~0.9.
+- Hyp and snore raises are unchanged. GUI defaults updated.
+
+**Bench 1: pressure lowering** (`apap_lowering.py`: normal 60 | plateau 90 % 180 |
+normal 720; AutoSet 8–12):
+
+| | before (20 Oct) | **now** | AirSense 11 |
+|---|---|---|---|
+| rise during the plateau block | 8.0 → 9.2 (0.4–0.6 cmH₂O/min) | **8.0 → 12.0 (max) in 2.0 min from the FL call, ~2.0/min** | 8 → 12 in ~75 s, ~3/min |
+| FL flag clears after the block | 15 s | 10 s | ~20 s |
+| lowering starts | 136 s after the block | **32 s after** | immediately |
+| fall rate | 0.48 cmH₂O/min | **0.30**, a smooth ramp (residual sd 0.003) | ~0.3 |
+| end of the 12 min normal block | back at the 8.0 minimum after ~4.7 min | 8.6 and still falling, never re-raised | still ~11 when its run ended |
+
+- FL came on 14 s into the block.
+- No OA, CA or Hyp; no FOT.
+- Peak CPAP supply current 0.85 A (3 samples > 0.8 A, at 12 cmH₂O).
+
+**Bench 2: flattened breaths** (`apap_flshape.py`, the same script as R13). Pressure
+target onset → block end → end + 60 s:
+
+| block | R13 build (before this change) | **raise / lowering build** | AirSense 11 (20 Oct) |
+|---|---|---|---|
+| plateau 90 % | 8.0 → 8.8 → 8.8 | **8.0 → 12.0 → 11.8** | 8.0 → 12.0 → 11.9 |
+| M 90 % | 8.8 → 9.2 → 9.2 | **11.6 → 12.0 → 11.8** | 11.7 → 12.0 → 11.9 |
+| plateau 60 % | 9.2 → 9.8 → 9.9 | **11.5 → 12.0 → 11.8** | 11.7 → 11.5 → 11.3 |
+| fastest rise / fall | 0.5 / −0.5 cmH₂O/min | **2.9 / −0.4** | ~3 / −0.3 |
+| FL flag on, % of block | 92 / 71 / 92 % | **91 / 88 / 91 %** | — |
+
+- **The rise and fall now track the AirSense on plateau 90 % and M 90 %.**
+- **No hunting.** In each 2-minute normal gap, FL cleared, the target held ~20 s and
+  then fell at 0.3 cmH₂O/min. FL never re-fired between blocks.
+- **FL episodes:** 3, one per block; no OA, CA, Hyp or FOT.
+- **Plateau 60 %:** ours raises a little (11.5 → 12.0), where the AirSense drifts
+  down. Both are near the 12 max here. If milder flattening should be ignored, widen
+  `FL_SEV_SPAN` or raise the 0.72 flatness line.
+- **Current:** peak 0.88 A, one sample > 0.8 A, at 12 cmH₂O. The APAP now reaches
+  high pressure sooner, so watch the 2026-10-05 fuse limits with wider AutoSet ranges
+  (e.g. 4–20).
+
+**Limits:** one rig, synthetic breaths; not clinically validated.
+
+**Still open:** the FL amplitude arm (peak < 0.70 × baseline) still raises pressure on
+central, unflattened hypopneas. The AirSense does not.
 
 ## Evidence
 
@@ -1976,7 +2056,8 @@ No CA, Hyp or FOT.
   `spike_events.csv`, `spike_source.png`, and the harness `spike_source.py` with
   `spike_analysis.py`. Trials 7, 7b–7g and 8: `apap_trial7{,b,c,d,e,f,g}_raw.pkl`, `apap_trial8{,b,c}_raw.pkl` (+ `apap_trial8{b,c}_diag.csv`), the threshold test `apap_hyp4555_raw.pkl` + `hyp_ratio.py`, the AirSense runs `airsense_8c_1637_raw.pkl` + `airsense_8c_1637_compare.png` and `airsense_flshape_1803_raw.pkl` + `airsense_flshape_1803_compare.png`; our CPAP on the same script `apap_flshape_raw.pkl` + `cpap_fl_report.py`, the pressure-lowering run `apap_lowering_raw.pkl` + `apap_lowering.log` (SD-card files in BreathSimulator `airsense_data/20261020`), the R13 runs in
   BreathSimulator `pc_tools/apap_bench/runs/` (`pre_r13/` = 20 Oct baseline,
-  `r13_dip090/` = first R13 flash, `apap_flshape_*` = dip 0.93), and
+  `r13_dip090/` = first R13 flash, `r13_dip093/` = dip 0.93), the raise / lowering
+  runs (`apap_lowering_*` and `apap_flshape_*` in the same folder), and
   `apap_trial7{,b,c,d,e,f,g}.log`, plus `needle_count.py`, `leak_source.py` + `leak_analysis.py` (R9: `leak_raw.pkl`, `leak_breaths.csv`, `leak_source.png`), `total_source.py` + `total_analysis.py` (R10: `total_raw.pkl`, `total_breaths.csv`, `total_source.png`) and `epr_replay.py`, which replays the EPR breath FSM on
   the logged `T,` data. These are temporary and may be cleared.
 - **Summaries:** BreathSimulator project memory, `breathsim-apap-waveforms.md`.

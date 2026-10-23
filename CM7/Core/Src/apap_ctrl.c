@@ -76,7 +76,15 @@ volatile uint8_t g_apap_fl_enable                  = 1U;
 volatile float   g_apap_fl_ratio                   = 0.70f;  /* peak < ratio*baseline */
 volatile uint8_t g_apap_fl_breaths_needed          = 3U;
 volatile uint8_t g_apap_fl_clear_breaths           = 2U;
-volatile float   g_apap_fl_raise_scale             = 0.50f;
+/* 23 Oct (docs/APAP_FINDINGS_2026-10-12_breathsim.md, "Pressure lowering"):
+ * on clear flow limitation ours rose ~0.5 cmH2O/min against the AirSense 11's
+ * ~3. The 0.50 scale halved the 3/min standard rate, and the shape severity
+ * was measured over the whole span from the threshold to 1.0, so typical FL
+ * breaths sat on its 0.25 floor. Now full scale, and severity reaches 1 at
+ * FL_SEV_SPAN past the threshold: plateau 90 % (flat ~0.80) ~2.4 cmH2O/min,
+ * M 90 % (dip ~0.86) ~2.1, plateau 60 % (flat ~0.75, which the AirSense
+ * barely raised for) ~0.9. */
+volatile float   g_apap_fl_raise_scale             = 1.00f;
 volatile float   g_apap_fl_min_peak_slm            = 4.0f;
 volatile float   g_apap_fl_baseline_alpha          = 0.25f;
 volatile float   g_apap_fl_flat_ratio              = 0.72f; /* mean/peak plateau */
@@ -198,8 +206,13 @@ volatile float   g_apap_snore_hp_hz                = 20.0f;  /* residual HP corn
 
 /* Down-titration + leak gate. */
 volatile uint8_t g_apap_lower_enable               = 1U;
-volatile float   g_apap_lower_rate_cmh2o_per_s     = 0.008f; /* ~0.5/min */
-volatile float   g_apap_stable_before_lower_s      = 120.0f;
+/* 23 Oct: lowering only began after 120 s with no FL / Hyp / snore, so in an
+ * eventful night (gaps <= 120 s) the target could only ratchet up. The
+ * AirSense 11 starts down as soon as the event clears, at ~0.3 cmH2O/min.
+ * Now 20 s, then 0.3/min (was 0.48): a short hold against hunting, and a
+ * slower fall in place of the long wait. */
+volatile float   g_apap_lower_rate_cmh2o_per_s     = 0.005f; /* ~0.3/min */
+volatile float   g_apap_stable_before_lower_s      = 20.0f;
 volatile uint8_t g_apap_leak_gate_enable           = 1U;     /* block raises on HIGH */
 
 /* === Live state === */
@@ -237,6 +250,7 @@ volatile uint32_t g_apap_evt_snore                = 0U;
 volatile uint32_t g_apap_therapy_ms               = 0U;
 
 #define FOT_Q_PP_EPS_SLM  0.15f
+#define FL_SEV_SPAN       0.10f   /* shape past its threshold for full FL raise */
 #define FOT_Z_BLOCKED     999.0f
 
 /* === Internal === */
@@ -1114,18 +1128,14 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
         const float flat_thr = clampf(g_apap_fl_flat_ratio, 0.55f, 0.95f);
         if (s_fl_last_flat >= flat_thr)
         {
-            const float span = 1.0f - flat_thr;
-            const float sev = (span > 0.05f)
-                                  ? clampf((s_fl_last_flat - flat_thr) / span,
-                                           0.25f, 1.0f)
-                                  : 1.0f;
+            const float sev = clampf((s_fl_last_flat - flat_thr) / FL_SEV_SPAN,
+                                     0.25f, 1.0f);
             fl_scale *= sev;
         }
         else if (s_fl_last_dip < flDipThreshold())
         {
-            /* R13: M-type notch; a dip of 0.5 is full severity. */
-            const float dip_thr = flDipThreshold();
-            const float sev = clampf((dip_thr - s_fl_last_dip) / (dip_thr - 0.5f),
+            /* R13: M-type notch. */
+            const float sev = clampf((flDipThreshold() - s_fl_last_dip) / FL_SEV_SPAN,
                                      0.25f, 1.0f);
             fl_scale *= sev;
         }
@@ -1157,7 +1167,7 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
     }
 
     const uint32_t stable_need_ms =
-        (uint32_t)(clampf(g_apap_stable_before_lower_s, 30.0f, 600.0f) * 1000.0f);
+        (uint32_t)(clampf(g_apap_stable_before_lower_s, 5.0f, 600.0f) * 1000.0f);
     if (g_apap_stable_ms < stable_need_ms)
     {
         return;
@@ -1197,7 +1207,7 @@ void Apap_Init(void)
     g_apap_fl_ratio = 0.70f;
     g_apap_fl_breaths_needed = 3U;
     g_apap_fl_clear_breaths = 2U;
-    g_apap_fl_raise_scale = 0.50f;
+    g_apap_fl_raise_scale = 1.00f;
     g_apap_fl_min_peak_slm = 4.0f;
     g_apap_fl_baseline_alpha = 0.25f;
     g_apap_fl_flat_ratio = 0.72f;     /* R13 */
@@ -1226,8 +1236,8 @@ void Apap_Init(void)
     g_apap_snore_raise_scale = 0.35f;
     g_apap_snore_hp_hz = 20.0f;
     g_apap_lower_enable = 1U;
-    g_apap_lower_rate_cmh2o_per_s = 0.008f;
-    g_apap_stable_before_lower_s = 120.0f;
+    g_apap_lower_rate_cmh2o_per_s = 0.005f;
+    g_apap_stable_before_lower_s = 20.0f;
     g_apap_leak_gate_enable = 1U;
 
     s_active = false;
@@ -1285,7 +1295,7 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
         /* AirSense for Her: gentler rises + slightly more FL-sensitive. */
         g_apap_response_soft = 1U;
         g_apap_fl_breaths_needed = 2U;
-        g_apap_fl_raise_scale = 0.55f;
+        g_apap_fl_raise_scale = 1.00f;  /* gentler via response_soft + her scale */
         g_apap_fl_flat_ratio = 0.70f;   /* R13: 0.72 - 0.02, as 0.78 - 0.04 was */
     }
     s_min_cmh2o = clampf(min_cmh2o, THERAPY_PRESS_MIN_CMH2O, THERAPY_PRESS_MAX_CMH2O);
