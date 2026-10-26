@@ -32,6 +32,7 @@
 #include "session_summary.h"
 #include "adherence.h"
 #include "fault_log.h"
+#include "watchdog.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1928,6 +1929,74 @@ static void Telem_ProcessOneCommand(const char *cmd)
     SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
                            (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #80: watchdog - last reset cause, per-task deadlines and worst gaps. */
+  if (strcmp(cmd, "wdg") == 0)
+  {
+    char line[160];
+    char note[48];
+    Telem_PushAck(cmd);
+    if (Watchdog_FormatResetNote(note, sizeof(note)) == 0)
+    {
+      note[0] = '\0';
+    }
+    const int tr = Watchdog_GetTripped();
+    int n = snprintf(line, sizeof(line),
+                     "# WDG run=%u timeout_ms=%lu tripped=%s reset=%s rsr=0x%08lX note=%s\r\n",
+                     Watchdog_IsRunning() ? 1U : 0U, (unsigned long)Watchdog_GetTimeoutMs(),
+                     (tr >= 0) ? Watchdog_GetTaskName((WdgTask_t)tr) : "-",
+                     Watchdog_GetResetCauseName(), (unsigned long)Watchdog_GetResetFlags(), note);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
+    for (uint32_t t = 0U; t < (uint32_t)WDG_TASK_N; t++)
+    {
+      const uint32_t age = Watchdog_GetTaskAgeMs((WdgTask_t)t);
+      n = snprintf(line, sizeof(line), "# WDGT %s deadline_ms=%lu max_gap_ms=%lu age_ms=%ld\r\n",
+                   Watchdog_GetTaskName((WdgTask_t)t),
+                   (unsigned long)Watchdog_GetTaskDeadlineMs((WdgTask_t)t),
+                   (unsigned long)Watchdog_GetTaskMaxGapMs((WdgTask_t)t),
+                   (age == 0xFFFFFFFFUL) ? -1L : (long)age);
+      if ((n > 0) && ((size_t)n < sizeof(line)))
+      {
+        Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+      }
+    }
+    return;
+  }
+
+  if (strcmp(cmd, "wdg clear") == 0)
+  {
+    Watchdog_ClearStats();
+    Telem_PushAck(cmd);
+    return;
+  }
+
+  /* Deliberate reset for bench verification - only with the blower stopped. */
+  if (strncmp(cmd, "wdg test ", 9U) == 0)
+  {
+    extern BlowerIpcStatus_t g_blower_status;
+    const char *arg = cmd + 9;
+    const WdgTest_t t = (strcmp(arg, "stall") == 0) ? WDG_TEST_STALL
+                      : (strcmp(arg, "hang") == 0)  ? WDG_TEST_HANG
+                      : (strcmp(arg, "fault") == 0) ? WDG_TEST_FAULT : WDG_TEST_NONE;
+    if (t == WDG_TEST_NONE)
+    {
+      Telem_PushErr("wdg test stall|hang|fault");
+      return;
+    }
+    if ((Therapy_GetState() != (uint8_t)THERAPY_STATE_IDLE)
+        || (g_blower_status.mech_speed_rpm > 500) || (g_blower_status.mech_speed_rpm < -500)
+        || !Watchdog_IsRunning())
+    {
+      Telem_PushErr("wdg test: needs therapy idle, blower stopped, watchdog running");
+      return;
+    }
+    Telem_PushAck(cmd);
+    Watchdog_RequestTest(t);
     return;
   }
 

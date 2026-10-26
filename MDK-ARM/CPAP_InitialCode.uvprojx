@@ -1062,6 +1062,11 @@
               <FilePath>..\CM7\Core\Src\fault_log.c</FilePath>
             </File>
             <File>
+              <FileName>watchdog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4948,6 +4953,11 @@
               <FileName>fault_log.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\fault_log.c</FilePath>
+            </File>
+            <File>
+              <FileName>watchdog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>

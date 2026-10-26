@@ -52,6 +52,7 @@
 #include "session_summary.h"
 #include "adherence.h"
 #include "fault_log.h"
+#include "watchdog.h"
 #include "physiology_telem.h"
 #include "safety_supervisor.h"
 /* USER CODE END Includes */
@@ -1277,6 +1278,9 @@ int main(void)
    * lines are buffered until a terminal is attached. */
   Dbg_Init();
   Telem_Init();
+  /* #80: why the last reset happened - before anything else uses the
+   * backup registers. Logged and IWDG1 started from SafetyTask. */
+  Watchdog_CaptureResetCause();
   /* RTC calendar (checklist #66): starts the LSE here; SelfTestTask's
    * RtcClock_Service() finishes the bring-up without blocking boot. */
   RtcClock_Init();
@@ -2265,6 +2269,7 @@ static void GuiTask(void *argument)
   boot_stage = 12U;
   for (;;)
   {
+    Watchdog_Kick(WDG_TASK_GUI);
     RotaryInput_Poll();
     MX_TouchGFX_Process();
   }
@@ -2416,6 +2421,7 @@ static void SensorTask(void *argument)
   {
     (void)osDelayUntil(next_wake);
     next_wake += period_ms;
+    Watchdog_Kick(WDG_TASK_SENSOR);
 
     /* ---------- Harvest results from previous tick's conversions ---------- */
 
@@ -2588,6 +2594,10 @@ static void SafetyTask(void *argument)
 
   const uint32_t period_ms = 5U;
   const float dt_s = (float)period_ms * 0.001f;
+
+  /* #80: IWDG1 - refreshed only from here, and only while every task
+   * checks in on time (watchdog.h). */
+  Watchdog_Start();
   uint32_t next_wake = osKernelGetTickCount() + period_ms;
 
   for (;;)
@@ -2595,6 +2605,7 @@ static void SafetyTask(void *argument)
     (void)osDelayUntil(next_wake);
     next_wake += period_ms;
     Safety_Supervisor_Update(dt_s);
+    Watchdog_Service();
   }
 }
 
@@ -2626,6 +2637,7 @@ static void NfcTask(void *argument)
 
   for (;;)
   {
+    Watchdog_Kick(WDG_TASK_NFC);
     NfcTest_Poll();
     osDelay(10U);
   }
@@ -2656,6 +2668,7 @@ static void ClimateTask(void *argument)
 
   for (;;)
   {
+    Watchdog_Kick(WDG_TASK_CLIMATE);
     (void)SensirionTH_ReadMeasurement(&hSht4x);
     (void)SensirionTH_ReadMeasurement(&hSts4x);
     Humidifier_Update();
@@ -2678,6 +2691,8 @@ static void SystemTask(void *argument)
 
   for (;;)
   {
+    Watchdog_Kick(WDG_TASK_SYSTEM);
+    Watchdog_TestPoll();        /* `wdg test`, after the ack has drained */
     Telem_ProcessCommands();
 
     if ((g_bench_blower_enable == 1U) && (g_bench_blower_enable_prev == 0U))
@@ -2777,6 +2792,7 @@ static void SelfTestTask(void *argument)
 
   for (;;)
   {
+    Watchdog_Kick(WDG_TASK_SELFTEST);
     if (!SD_CardPresent())
     {
       if (hsd1.State != HAL_SD_STATE_RESET)
@@ -3049,6 +3065,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
+  Watchdog_Note(WDG_NOTE_ERROR, boot_stage, (uint32_t)__builtin_return_address(0), 0U);
   boot_stage = 0xEEU;
   while (1)
   {

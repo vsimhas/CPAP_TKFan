@@ -23,6 +23,7 @@
 #include "cm7_cpu_config.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "watchdog.h"   /* #80: leave the reason before IWDG1 resets */
 
 /* USER CODE END Includes */
 
@@ -71,9 +72,21 @@ uint32_t ulRotSwIntrCnt = 0;
 #define CM7_STACK_BASE 0x20000000U
 #define CM7_STACK_LIMIT 0x20020000U
 
+/* FreeRTOS task stacks come from ucHeap in AXI SRAM. */
+#define CM7_AXI_SRAM_BASE 0x24000000U
+#define CM7_AXI_SRAM_LIMIT 0x24080000U
+
 static int FaultStackPointerValid(uint32_t sp)
 {
   return (sp >= (CM7_STACK_BASE + 32U)) && (sp < CM7_STACK_LIMIT) && ((sp & 3U) == 0U);
+}
+
+/* Wider than FaultStackPointerValid (which still gates the unaligned-access
+ * emulation): only for reading the stacked PC / LR of a fault in a task. */
+static int FaultStackReadable(uint32_t sp)
+{
+  return FaultStackPointerValid(sp)
+      || ((sp >= CM7_AXI_SRAM_BASE) && (sp <= (CM7_AXI_SRAM_LIMIT - 32U)) && ((sp & 3U) == 0U));
 }
 
 static void FaultCaptureStack(void)
@@ -93,7 +106,7 @@ static void FaultCaptureStack(void)
   hf_cpacr = SCB->CPACR;
   hf_ccr = SCB->CCR;
 
-  if (FaultStackPointerValid(hf_sp))
+  if (FaultStackReadable(hf_sp))
   {
     hf_pc = sp[6];
     hf_lr = sp[5];
@@ -233,6 +246,7 @@ void HardFault_Handler(void)
   hf_ufsr = (SCB->CFSR >> 16U) & 0xFFFFU;
   hf_boot_stage = boot_stage;
   boot_stage = 0xFFU;
+  Watchdog_Note(WDG_NOTE_FAULT, 'H', hf_pc, hf_cfsr);
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -251,6 +265,7 @@ void MemManage_Handler(void)
   hf_mmfar = SCB->MMFAR;
   hf_boot_stage = boot_stage;
   boot_stage = 0xFEU;
+  Watchdog_Note(WDG_NOTE_FAULT, 'M', 0U, hf_cfsr);
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -265,7 +280,7 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+  Watchdog_Note(WDG_NOTE_FAULT, 'B', 0U, SCB->CFSR);
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -296,7 +311,7 @@ void UsageFault_Handler_C(void)
   hf_sp = (uint32_t)exc_stack;
   hf_cpacr = SCB->CPACR;
   hf_ccr = SCB->CCR;
-  if (FaultStackPointerValid(hf_sp))
+  if (FaultStackReadable(hf_sp))
   {
     hf_pc = exc_stack[6];
     hf_lr = exc_stack[5];
@@ -328,6 +343,7 @@ void UsageFault_Handler_C(void)
   }
 
   boot_stage = 0xFDU;
+  Watchdog_Note(WDG_NOTE_FAULT, 'U', hf_pc, hf_cfsr);
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {

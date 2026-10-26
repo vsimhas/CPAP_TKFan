@@ -119,6 +119,11 @@ void FaultLog_RecordTherapy(uint16_t code, const char *name, const char *why)
     record((uint8_t)FAULT_SRC_THERAPY, code, name, why);
 }
 
+void FaultLog_RecordSystem(uint16_t code, const char *name, const char *why)
+{
+    record((uint8_t)FAULT_SRC_SYSTEM, code, name, why);
+}
+
 /* MCSDK fault bits (CM4 mc_type.h) as names joined with '+'. */
 static void driveFaultNames(uint16_t bits, char *buf, size_t len)
 {
@@ -163,7 +168,8 @@ static int formatRecord(const FaultRec_t *r, char *buf, unsigned len, bool csv)
         csv ? "" : "# FLT ",
         (unsigned)FAULT_LOG_SCHEMA, (unsigned long)r->seq, t, (unsigned)r->dt_valid,
         (unsigned long)(r->uptime_ms / 1000U),
-        (r->source == (uint8_t)FAULT_SRC_DRIVE) ? "drive" : "therapy",
+        (r->source == (uint8_t)FAULT_SRC_DRIVE) ? "drive"
+            : (r->source == (uint8_t)FAULT_SRC_SYSTEM) ? "system" : "therapy",
         (unsigned)r->code, r->name, r->why,
         (unsigned)r->th_state, (unsigned)r->mode, (unsigned long)r->run_s,
         (double)r->target, (double)r->setpoint, (double)r->meas,

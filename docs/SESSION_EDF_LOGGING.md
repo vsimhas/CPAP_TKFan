@@ -105,7 +105,10 @@ Every fault is recorded with the state around it, not just the code, and appende
   `Sensor Out Of Range`, `Cannot Reach Target`, `CM4 Heartbeat Lost`), captured at the
   moment of the latch, before the blower is stopped;
 - **drive** faults: new bits in the CM4 occurred-fault word (`OVER_VOLT`, `OVER_CURR`,
-  `DP_FAULT`, ... from MCSDK `mc_type.h`).
+  `DP_FAULT`, ... from MCSDK `mc_type.h`);
+- **system** faults: an abnormal last reset (`watchdog`, `cm4-watchdog`, ...), recorded at
+  boot with the reason left before the reset (stalled task, or fault handler and PC) - see
+  [WATCHDOG.md](WATCHDOG.md). `code` is the reset-flag word `RCC_C1_RSR >> 16`.
 
 Columns: `seq, time (RTC), rtc_valid, uptime_s, source, code, name, detail,
 therapy_state, mode, run_s, target, setpoint, meas, flow, leak, rpm_cmd, rpm_mech, iq_ma,

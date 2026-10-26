@@ -12,7 +12,9 @@
   *   - therapy: every Therapy_LatchFault() (safety supervisor), captured at
   *     the moment of the latch, before the blower is stopped;
   *   - drive:   new bits in the CM4 occurred-fault word (MCSDK MC_* codes,
-  *     e.g. DP_FAULT), polled from FaultLog_Service() every 10 ms.
+  *     e.g. DP_FAULT), polled from FaultLog_Service() every 10 ms;
+  *   - system:  an abnormal last reset (watchdog, see watchdog.h), recorded
+  *     at boot with the reason left before the reset.
   *
   *  Records go into a RAM ring (last FAULT_LOG_RING_N, `faults` over USB)
   *  and are appended to FAULTS.CSV whenever the card is mounted - pending
@@ -36,11 +38,14 @@ extern "C" {
 typedef enum
 {
     FAULT_SRC_THERAPY = 0,
-    FAULT_SRC_DRIVE
+    FAULT_SRC_DRIVE,
+    FAULT_SRC_SYSTEM
 } FaultSource_t;
 
 /* Therapy_LatchFault(): snapshot now (RAM only, any task). */
 void     FaultLog_RecordTherapy(uint16_t code, const char *name, const char *why);
+/* Abnormal last reset (watchdog.c): code = RCC_C1_RSR >> 16. */
+void     FaultLog_RecordSystem(uint16_t code, const char *name, const char *why);
 /* SelfTestTask: drive-fault polling + FAULTS.CSV append. */
 void     FaultLog_Service(void);
 
