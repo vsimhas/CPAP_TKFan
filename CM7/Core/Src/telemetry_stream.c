@@ -271,6 +271,7 @@ extern volatile float   g_apap_fl_flat_ratio;
 extern volatile float   g_apap_fl_dip_ratio;
 extern volatile float   g_apap_fl_seg_floor_slm;
 extern volatile uint8_t g_apap_fl_amp_arm_enable;
+extern volatile uint8_t g_apap_cpap_scoring_enable;
 extern volatile float   g_apap_hyp_raise_shape_frac;
 extern volatile uint8_t g_apap_hyp_enable;
 extern volatile float   g_apap_hyp_ratio;
@@ -426,7 +427,8 @@ static void Telem_PushStatus(void)
   static char line[1024];
   uint32_t now = HAL_GetTick();
   const uint8_t mode = Therapy_GetMode();
-  const bool autoset = (mode != (uint8_t)THERAPY_MODE_CPAP);
+  /* APAP fields whenever its detectors run: AutoSet, or CPAP scoring (#33). */
+  const bool autoset = (mode != (uint8_t)THERAPY_MODE_CPAP) || Apap_IsScoreOnly();
   int n = snprintf(line, sizeof(line),
                    "S,%lu,%u,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u,%.2f,%.2f"
                    ",%u,%u,%.3f,%.3f,%.3f,%u,%.3f,%u,%u,%.2f,%u"
@@ -1013,6 +1015,11 @@ static int Telem_SetApapIntParam(const char *name, long value)
   if (strcmp(name, "fl_amp_arm") == 0)
   {
     g_apap_fl_amp_arm_enable = (value != 0L) ? 1U : 0U;
+    return 1;
+  }
+  if (strcmp(name, "cpap_scoring") == 0)
+  {
+    g_apap_cpap_scoring_enable = (value != 0L) ? 1U : 0U;
     return 1;
   }
   if (strcmp(name, "fl_breaths_needed") == 0)

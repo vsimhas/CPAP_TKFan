@@ -111,8 +111,9 @@ void SessionSummary_OnTherapyStop(void)
     const uint32_t run_s = Therapy_GetRunSeconds();
     const uint32_t off_s = Therapy_GetSessionMaskOffSeconds();
     const uint32_t on_s = (run_s > off_s) ? (run_s - off_s) : 0U;
-    /* Events are scored by the APAP detectors, which only run in AutoSet. */
-    const bool scored = (s_mode != THERAPY_MODE_CPAP);
+    /* Events are scored by the APAP detectors: AutoSet, and CPAP unless
+     * scoring is switched off there (apap set cpap_scoring 0). */
+    const bool scored = Apap_WasSessionScored();
     const uint32_t oa = scored ? Apap_GetEventOaCount() : 0U;
     const uint32_t ca = scored ? Apap_GetEventCaCount() : 0U;
     const uint32_t hyp = scored ? Apap_GetEventHypCount() : 0U;

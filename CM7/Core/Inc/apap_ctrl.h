@@ -81,6 +81,10 @@ bool       Apap_IsFlowLimited(void);
 bool       Apap_IsHypopneaActive(void);
 bool       Apap_IsSnoreActive(void);
 bool       Apap_IsRaiseBlockedByLeak(void);
+/* #33: detectors running in CPAP mode (scoring, no titration). */
+bool       Apap_IsScoreOnly(void);
+/* The last / current session scored events (AutoSet, or CPAP scoring on). */
+bool       Apap_WasSessionScored(void);
 float      Apap_GetFlPeakBaselineSlm(void);
 float      Apap_GetFlLastPeakSlm(void);
 float      Apap_GetFlLastFlat(void);   /* insp mean/peak, 0–1 */

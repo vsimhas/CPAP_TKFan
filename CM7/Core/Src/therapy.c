@@ -2195,7 +2195,8 @@ float Therapy_GetApapMaxPressure(void) { return g_therapy_apap_max_cmh2o; }
 
 const char* Therapy_GetApapStateName(void)
 {
-    if (!therapyAutosetActive())
+    /* AutoSet, or CPAP with event scoring (#33). */
+    if (Apap_GetState() == APAP_STATE_IDLE)
     {
         return "";
     }
@@ -2430,6 +2431,9 @@ void Therapy_Start(void)
         s_session_target_cmh2o   = clampf(g_therapy_target_cmh2o,
                                           THERAPY_PRESS_MIN_CMH2O,
                                           THERAPY_PRESS_MAX_CMH2O);
+        /* #33: event scoring at the fixed pressure (no titration). */
+        Apap_OnTherapyStart(s_session_target_cmh2o, s_session_target_cmh2o,
+                            g_therapy_mode);
     }
     g_therapy_ramp_total_ms  = (uint32_t)g_therapy_ramp_minutes * 60U * 1000U;
     g_therapy_ramp_elapsed_ms = 0U;
@@ -2698,6 +2702,8 @@ void Therapy_Update(float dt_s)
             {
                 s_session_target_cmh2o = live_target;
             }
+            /* #33: detectors only - the APAP target is ignored here. */
+            (void)Apap_Update(dt_s, g_therapy_state, s_mask_off_active);
             applyTherapySetpoint(s_session_target_cmh2o, dt_s);
         }
         g_therapy_run_ms += dt_ms;

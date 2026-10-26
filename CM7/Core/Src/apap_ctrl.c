@@ -208,6 +208,15 @@ volatile uint8_t g_apap_hyp_rearm_breaths          = 2U;
  *    (obstructive); a round one is scored and holds the pressure (no raise,
  *    and the lowering wait restarts). 0 = raise on every hypopnea. */
 volatile uint8_t g_apap_fl_amp_arm_enable          = 0U;
+/* Checklist #33: score events in CPAP mode too. The detectors (incl. the
+ * FOT patency probe during apneas, as ResMed does in CPAP mode) run exactly
+ * as in AutoSet, but every pressure change is blocked: the set CPAP pressure
+ * stays, and OA / CA / Hyp / FL / snore still reach the event counters, the
+ * EVE file, SUMMARY.CSV and adherence. 0 = detectors off in CPAP mode. */
+volatile uint8_t g_apap_cpap_scoring_enable        = 1U;
+/* This session's detectors ran (AutoSet, or CPAP with scoring on). Set at
+ * therapy start and kept after the stop, for the session summary. */
+volatile uint8_t g_apap_session_scored             = 0U;
 volatile float   g_apap_hyp_raise_shape_frac       = 0.50f;
 
 /* Snore: HF residual RMS on patient raw vs breath-band flow. */
@@ -271,6 +280,7 @@ volatile uint32_t g_apap_therapy_ms               = 0U;
 static float     s_min_cmh2o = 5.0f;
 static float     s_max_cmh2o = 20.0f;
 static bool      s_for_her = false;
+static bool      s_score_only = false;   /* #33: CPAP mode - no titration */
 static bool      s_active = false;
 static bool      s_osa_treating = false;
 static FlowFotBp_t s_fot_bp_p;
@@ -500,7 +510,7 @@ static bool raiseAllowed(void)
 
 static void applyRaise(float scale, float dt_s)
 {
-    if (!raiseAllowed())
+    if (s_score_only || !raiseAllowed())
     {
         return;
     }
@@ -511,7 +521,7 @@ static void applyRaise(float scale, float dt_s)
 
 static bool applyStepRaise(float delta_cmh2o)
 {
-    if (!(delta_cmh2o > 0.0f) || !raiseAllowed())
+    if (s_score_only || !(delta_cmh2o > 0.0f) || !raiseAllowed())
     {
         return false;
     }
@@ -1322,7 +1332,7 @@ static void applyMonitorTitration(float dt_s, uint32_t dt_ms)
     }
 
     g_apap_stable_ms += dt_ms;
-    if (g_apap_lower_enable == 0U)
+    if (s_score_only || (g_apap_lower_enable == 0U))
     {
         return;
     }
@@ -1443,15 +1453,20 @@ bool Apap_IsResponseSoft(void)
 
 void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
 {
-    if (!autosetMode(therapy_mode))
+    const bool autoset = autosetMode(therapy_mode);
+    if (!autoset && (g_apap_cpap_scoring_enable == 0U))
     {
         s_active = false;
+        s_score_only = false;
+        g_apap_session_scored = 0U;
         setState(APAP_STATE_IDLE);
         disableOsc();
         return;
     }
 
     s_active = true;
+    s_score_only = !autoset;              /* #33: CPAP - pass min = max = set P */
+    g_apap_session_scored = 1U;
     s_for_her = (therapy_mode == (uint8_t)THERAPY_MODE_AUTOSET_FOR_HER);
     if (s_for_her)
     {
@@ -1466,6 +1481,10 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
     if (s_max_cmh2o < s_min_cmh2o)
     {
         s_max_cmh2o = s_min_cmh2o;
+    }
+    if (s_score_only)
+    {
+        s_max_cmh2o = s_min_cmh2o;        /* the target can never move */
     }
 
     g_apap_target_cmh2o = s_min_cmh2o;
@@ -1578,6 +1597,8 @@ bool  Apap_IsFlowLimited(void)             { return (g_apap_fl_active != 0U); }
 bool  Apap_IsHypopneaActive(void)          { return (g_apap_hyp_active != 0U); }
 bool  Apap_IsSnoreActive(void)             { return (g_apap_snore_active != 0U); }
 bool  Apap_IsRaiseBlockedByLeak(void)      { return (g_apap_raise_blocked_leak != 0U); }
+bool  Apap_IsScoreOnly(void)               { return s_active && s_score_only; }
+bool  Apap_WasSessionScored(void)          { return (g_apap_session_scored != 0U); }
 float Apap_GetFlPeakBaselineSlm(void)      { return g_apap_fl_peak_baseline_slm; }
 float Apap_GetFlLastPeakSlm(void)          { return g_apap_fl_last_peak_slm; }
 float Apap_GetFlLastFlat(void)             { return g_apap_fl_last_flat; }

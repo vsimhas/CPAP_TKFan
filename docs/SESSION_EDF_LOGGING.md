@@ -56,7 +56,7 @@ schema version: columns are only ever added at the end, with the version bumped.
 | `mode`, `p_cpap`, `apap_min`, `apap_max`, `epr_type`, `epr_level`, `ramp_min` | settings (`p_cpap`: set pressure in CPAP, last target in AutoSet) |
 | `p_avg` ... `p95` | mask pressure avg / min / max / P50 / P90 / P95 (mask-off excluded) |
 | `leak_avg`, `leak_p50`, `leak_p95`, `leak_max`, `leak_high_s`, `leak_low_s` | unintentional leak (L/min) and seconds above the high / below the low threshold |
-| `events_scored`, `oa`, `ca`, `hyp`, `fl`, `snore` | scored events; `events_scored` 0 in CPAP mode (the detectors run in AutoSet only) |
+| `events_scored`, `oa`, `ca`, `hyp`, `fl`, `snore` | scored events; scored in AutoSet and in CPAP mode (#33: detectors on, no titration); `events_scored` 0 only with `apap set cpap_scoring 0` |
 | `ahi`, `rdi`, `si` | per hour of **mask-on** time |
 | `edf` | the session's DATALOG name, e.g. `20261026_140818` |
 
