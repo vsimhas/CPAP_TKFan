@@ -96,6 +96,25 @@ Cross-check a card on the PC with the same definitions:
 python pc_tools/adherence_check.py SUMMARY.CSV --now "2026-10-26 16:06:11"
 ```
 
+## Fault log: `0:/FAULTS.CSV` (checklist #86)
+
+Every fault is recorded with the state around it, not just the code, and appended to
+`FAULTS.CSV` at the card root (schema comment + header, like `SUMMARY.CSV`):
+
+- **therapy** faults: every safety-supervisor latch (`Sensor/Hose Lost`, `Over Pressure`,
+  `Sensor Out Of Range`, `Cannot Reach Target`, `CM4 Heartbeat Lost`), captured at the
+  moment of the latch, before the blower is stopped;
+- **drive** faults: new bits in the CM4 occurred-fault word (`OVER_VOLT`, `OVER_CURR`,
+  `DP_FAULT`, ... from MCSDK `mc_type.h`).
+
+Columns: `seq, time (RTC), rtc_valid, uptime_s, source, code, name, detail,
+therapy_state, mode, run_s, target, setpoint, meas, flow, leak, rpm_cmd, rpm_mech, iq_ma,
+id_ma, vbus_mv, mc_state, cur_faults, occ_faults`.
+
+The last 16 records stay in RAM; `faults` prints the count, how many are still waiting
+for the card (`pending`) and the 8 most recent (`# FLT ...`, newest first). Records made
+while no card is in are written at the next mount.
+
 ## OSCAR
 
 Copy the card (or its `DATALOG`, `STR.edf`, `Identification.json`) and import it in

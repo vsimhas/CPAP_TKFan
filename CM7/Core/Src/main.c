@@ -51,6 +51,7 @@
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
+#include "fault_log.h"
 #include "physiology_telem.h"
 #include "safety_supervisor.h"
 /* USER CODE END Includes */
@@ -2881,6 +2882,7 @@ static void SelfTestTask(void *argument)
     SessionEdf_Service();
     SessionSummary_Service();   /* #57: SUMMARY.CSV */
     Adherence_Service();        /* #65: from SUMMARY.CSV */
+    FaultLog_Service();         /* #86: drive faults + FAULTS.CSV */
 
     if (sdram_test_step != 100U)
     {

@@ -31,6 +31,7 @@
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
+#include "fault_log.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1927,6 +1928,31 @@ static void Telem_ProcessOneCommand(const char *cmd)
     SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
                            (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #86: the fault log - count, card state, and the most recent records. */
+  if (strcmp(cmd, "faults") == 0)
+  {
+    char line[320];
+    Telem_PushAck(cmd);
+    int n = snprintf(line, sizeof(line), "# FAULTS count=%lu pending=%lu err=0x%lX\r\n",
+                     (unsigned long)FaultLog_GetCount(),
+                     (unsigned long)FaultLog_GetPending(),
+                     (unsigned long)FaultLog_GetError());
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
+    for (uint32_t k = 0U; k < 8U; k++)
+    {
+      n = FaultLog_FormatRecent(k, line, sizeof(line));
+      if (n <= 0)
+      {
+        break;
+      }
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
     return;
   }
 

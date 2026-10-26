@@ -18,6 +18,7 @@
 #include "apap_ctrl.h"
 #include "session_edf_log.h"
 #include "session_summary.h"
+#include "fault_log.h"
 #include "safety_supervisor.h"
 #include "telemetry_stream.h"   /* Telem_PushMaskOff - see enterMaskOff() */
 #include "dbg_log.h"
@@ -2053,6 +2054,20 @@ static bool updateMaskOff(float dt_s, uint32_t dt_ms)
     return true;
 }
 
+static const char* faultNameOf(TherapyFault_t f)
+{
+    switch (f)
+    {
+    case THERAPY_FAULT_NONE:                 return "OK";
+    case THERAPY_FAULT_LOW_PRESS_AT_HIGH_RPM:return "Sensor/Hose Lost";
+    case THERAPY_FAULT_OVER_PRESSURE:        return "Over Pressure";
+    case THERAPY_FAULT_SENSOR_OUT_OF_RANGE:  return "Sensor Out Of Range";
+    case THERAPY_FAULT_RPM_SATURATED:        return "Cannot Reach Target";
+    case THERAPY_FAULT_CM4_HEARTBEAT:        return "CM4 Heartbeat Lost";
+    default:                                  return "?";
+    }
+}
+
 /* Latch a fault: log it, kill the blower, transition to FAULT. */
 void Therapy_LatchFault(TherapyFault_t f, const char *why)
 {
@@ -2060,6 +2075,9 @@ void Therapy_LatchFault(TherapyFault_t f, const char *why)
     {
         return;  /* first fault wins */
     }
+
+    /* #86: durable record with the state around it, before the blower stops. */
+    FaultLog_RecordTherapy((uint16_t)f, faultNameOf(f), why);
 
     DBG_E("THR", "FAULT %u: %s (rpm=%ld meas=%.2f sp=%.2f)",
           (unsigned)f, why,
@@ -2222,16 +2240,7 @@ TherapyFault_t Therapy_GetFault(void) { return (TherapyFault_t)g_therapy_fault; 
 
 const char* Therapy_GetFaultName(void)
 {
-    switch ((TherapyFault_t)g_therapy_fault)
-    {
-    case THERAPY_FAULT_NONE:                 return "OK";
-    case THERAPY_FAULT_LOW_PRESS_AT_HIGH_RPM:return "Sensor/Hose Lost";
-    case THERAPY_FAULT_OVER_PRESSURE:        return "Over Pressure";
-    case THERAPY_FAULT_SENSOR_OUT_OF_RANGE:  return "Sensor Out Of Range";
-    case THERAPY_FAULT_RPM_SATURATED:        return "Cannot Reach Target";
-    case THERAPY_FAULT_CM4_HEARTBEAT:        return "CM4 Heartbeat Lost";
-    default:                                  return "?";
-    }
+    return faultNameOf((TherapyFault_t)g_therapy_fault);
 }
 
 void Therapy_ClearFault(void)

@@ -1057,6 +1057,11 @@
               <FilePath>..\CM7\Core\Src\adherence.c</FilePath>
             </File>
             <File>
+              <FileName>fault_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\fault_log.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4938,6 +4943,11 @@
               <FileName>adherence.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\adherence.c</FilePath>
+            </File>
+            <File>
+              <FileName>fault_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\fault_log.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>
