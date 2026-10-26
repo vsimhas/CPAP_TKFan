@@ -222,6 +222,7 @@ float          Therapy_GetLeakPercentOfVent(void);
 uint32_t       Therapy_GetMaskOffEnterCount(void);
 uint32_t       Therapy_GetMaskOnCount(void);
 uint32_t       Therapy_GetRunSeconds(void);       /* time in RAMP+RUNNING  */
+uint32_t       Therapy_GetSessionMaskOffSeconds(void); /* part of it mask-off */
 uint32_t       Therapy_GetRampRemainingSeconds(void); /* 0 if not ramping  */
 
 /* Session delivered-pressure statistics (RAM; reset on Therapy_Start).

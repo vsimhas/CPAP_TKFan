@@ -34,13 +34,35 @@ stamped at its **end** (seconds from the file start) and carries its duration:
 - a hypopnea is written when breathing recovers.
 
 Flow limitation and snore have no EVE entry in OSCAR's loader; they belong in PLD as
-continuous indices (#60/#61). `STR.edf` is still a header-only stub (#57).
+continuous indices (#60/#61). `STR.edf` is still a header-only stub; the session
+summary is in `SUMMARY.CSV` (below).
 
 Inspect a file without a viewer:
 
 ```
 python pc_tools/edf_inspect.py <file>.edf
 ```
+
+## Session summary: `0:/SUMMARY.CSV` (checklist #57)
+
+When therapy stops, one line per session is appended to `SUMMARY.CSV` at the card
+root (created with a `# ... schema 1` comment and a column header). Column 1 is the
+schema version: columns are only ever added at the end, with the version bumped.
+
+| Columns | Meaning |
+|---------|---------|
+| `start`, `end`, `rtc_valid` | RTC time at therapy start / stop; `rtc_valid` 0 = clock not set since the last power loss |
+| `run_s`, `mask_on_s`, `mask_off_s`, `mask_off_n` | therapy run time, of which with the mask on / off; mask-off episodes |
+| `mode`, `p_cpap`, `apap_min`, `apap_max`, `epr_type`, `epr_level`, `ramp_min` | settings (`p_cpap`: set pressure in CPAP, last target in AutoSet) |
+| `p_avg` ... `p95` | mask pressure avg / min / max / P50 / P90 / P95 (mask-off excluded) |
+| `leak_avg`, `leak_p50`, `leak_p95`, `leak_max`, `leak_high_s`, `leak_low_s` | unintentional leak (L/min) and seconds above the high / below the low threshold |
+| `events_scored`, `oa`, `ca`, `hyp`, `fl`, `snore` | scored events; `events_scored` 0 in CPAP mode (the detectors run in AutoSet only) |
+| `ahi`, `rdi`, `si` | per hour of **mask-on** time |
+| `edf` | the session's DATALOG name, e.g. `20261026_140818` |
+
+The record is snapshotted in RAM at stop and written while the card is mounted (EDF
+logging enabled). `therapy summary` prints the last record over USB (`# SUMR`) with
+its column header (`# SUMH`), and `pending/written/err` for the card write.
 
 ## OSCAR
 

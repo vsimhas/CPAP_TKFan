@@ -1047,6 +1047,11 @@
               <FilePath>..\CM7\Core\Src\rtc_clock.c</FilePath>
             </File>
             <File>
+              <FileName>session_summary.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\session_summary.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4918,6 +4923,11 @@
               <FileName>rtc_clock.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\rtc_clock.c</FilePath>
+            </File>
+            <File>
+              <FileName>session_summary.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\session_summary.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>

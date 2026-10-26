@@ -10,6 +10,7 @@
 #include "flow_sensor.h"
 
 #include <math.h>
+#include <string.h>
 
 /* === Algorithm selection === */
 volatile uint8_t g_leak_vivo_enable = 1U;
@@ -69,6 +70,12 @@ volatile float    g_leak_session_low_time_s = 0.0f;
 volatile float    g_leak_session_avg_slm = 0.0f;
 volatile float    g_leak_session_max_slm = 0.0f;
 volatile uint32_t g_leak_session_samples = 0U;
+/* #57: |unintentional leak| histogram for the session median / 95th
+ * percentile ResMed reports (1 L/min bins, 0..150). Mask-off time
+ * (disconnect freeze) is left out, as the pressure statistics leave it out. */
+#define LEAK_HIST_N  151U
+static uint32_t s_leak_hist[LEAK_HIST_N];
+static uint32_t s_leak_hist_n = 0U;
 volatile uint32_t g_leak_health_high_samples = 0U;
 volatile uint32_t g_leak_health_low_samples = 0U;
 volatile uint32_t g_leak_health_reseed_count = 0U;
@@ -247,6 +254,8 @@ void Leak_SessionReset(void)
     g_leak_session_avg_slm = 0.0f;
     g_leak_session_max_slm = 0.0f;
     g_leak_session_samples = 0U;
+    memset(s_leak_hist, 0, sizeof(s_leak_hist));
+    s_leak_hist_n = 0U;
     g_leak_health_high_samples = 0U;
     g_leak_health_low_samples = 0U;
     g_leak_health_reseed_count = 0U;
@@ -268,6 +277,26 @@ float Leak_GetSessionMaxSlm(void)      { return g_leak_session_max_slm; }
 float Leak_GetSessionHighTimeS(void)   { return g_leak_session_high_time_s; }
 float Leak_GetSessionLowTimeS(void)    { return g_leak_session_low_time_s; }
 float Leak_GetSessionElapsedS(void)    { return g_leak_session_elapsed_s; }
+
+float Leak_GetSessionPercentileSlm(float pct)
+{
+    if (s_leak_hist_n == 0U)
+    {
+        return 0.0f;
+    }
+    uint32_t target = (uint32_t)((clampf(pct, 0.0f, 100.0f) / 100.0f) * (float)s_leak_hist_n);
+    if (target < 1U) { target = 1U; }
+    uint32_t cum = 0U;
+    for (uint32_t i = 0U; i < LEAK_HIST_N; i++)
+    {
+        cum += s_leak_hist[i];
+        if (cum >= target)
+        {
+            return (float)i;
+        }
+    }
+    return (float)(LEAK_HIST_N - 1U);
+}
 uint32_t Leak_GetHealthHighSamples(void) { return g_leak_health_high_samples; }
 uint32_t Leak_GetHealthLowSamples(void)  { return g_leak_health_low_samples; }
 uint32_t Leak_GetHealthReseedCount(void) { return g_leak_health_reseed_count; }
@@ -418,6 +447,14 @@ static void leakUpdateDerivedMetrics(float mask_pressure_cmh2o, float dt_s)
         if (g_leak_is_low != 0U)
         {
             g_leak_session_low_time_s += dt_s;
+        }
+
+        if (!s_freeze_disconnect)
+        {
+            uint32_t bin = (uint32_t)(abs_unint + 0.5f);
+            if (bin >= LEAK_HIST_N) { bin = LEAK_HIST_N - 1U; }
+            s_leak_hist[bin]++;
+            s_leak_hist_n++;
         }
 
         g_leak_session_samples++;

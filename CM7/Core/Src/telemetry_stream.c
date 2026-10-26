@@ -29,6 +29,7 @@
 #include "physiology_telem.h"
 #include "session_edf_log.h"
 #include "rtc_clock.h"
+#include "session_summary.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1918,6 +1919,29 @@ static void Telem_ProcessOneCommand(const char *cmd)
     SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
                            (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #57: the last session's summary record (as appended to SUMMARY.CSV). */
+  if (strcmp(cmd, "therapy summary") == 0)
+  {
+    char line[64];
+    Telem_PushAck(cmd);
+    int n = snprintf(line, sizeof(line), "# SUM pending=%u written=%lu err=0x%lX\r\n",
+                     SessionSummary_IsPending() ? 1U : 0U,
+                     (unsigned long)SessionSummary_GetWritten(),
+                     (unsigned long)SessionSummary_GetError());
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
+    Telem_BufPush((const uint8_t *)"# SUMH ", 7U);
+    Telem_BufPush((const uint8_t *)SessionSummary_GetHeaderLine(),
+                  (uint32_t)strlen(SessionSummary_GetHeaderLine()));
+    Telem_BufPush((const uint8_t *)"\r\n# SUMR ", 9U);
+    Telem_BufPush((const uint8_t *)SessionSummary_GetLastLine(),
+                  (uint32_t)strlen(SessionSummary_GetLastLine()));
+    Telem_BufPush((const uint8_t *)"\r\n", 2U);
     return;
   }
 

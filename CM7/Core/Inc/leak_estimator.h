@@ -126,6 +126,7 @@ float    Leak_GetSessionAvgSlm(void);
 float    Leak_GetSessionMaxSlm(void);
 float    Leak_GetSessionHighTimeS(void);   /* time |unint| above high thresh */
 float    Leak_GetSessionLowTimeS(void);    /* time low/blocked-vent flag set */
+float    Leak_GetSessionPercentileSlm(float pct); /* |unint| percentile, L/min */
 float    Leak_GetSessionElapsedS(void);
 
 /* Estimator health counters (monotonic until SessionReset / Init). */

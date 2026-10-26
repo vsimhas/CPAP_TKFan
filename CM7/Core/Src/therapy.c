@@ -17,6 +17,7 @@
 #include "epr_ctrl.h"
 #include "apap_ctrl.h"
 #include "session_edf_log.h"
+#include "session_summary.h"
 #include "safety_supervisor.h"
 #include "telemetry_stream.h"   /* Telem_PushMaskOff - see enterMaskOff() */
 #include "dbg_log.h"
@@ -356,6 +357,8 @@ volatile float    g_therapy_setpoint_cmh2o = 0.0f;
 volatile float    g_therapy_measured_cmh2o = 0.0f;
 volatile float    g_therapy_leak_slm       = 0.0f;
 volatile uint32_t g_therapy_run_ms         = 0U;     /* time in RAMP+RUNNING*/
+/* #57: part of run_ms spent in mask-off (usage = run - mask-off). */
+volatile uint32_t g_therapy_session_mask_off_ms = 0U;
 volatile uint32_t g_therapy_ramp_total_ms  = 0U;     /* this session        */
 
 /* Session pressure percentiles (#63). Histogram 0..30 cmH2O @ 0.2 step. */
@@ -2251,6 +2254,7 @@ float    Therapy_GetLeakPercentOfVent(void) { return Leak_GetPercentOfVent(); }
 uint32_t Therapy_GetMaskOffEnterCount(void) { return g_therapy_mask_off_enter_count; }
 uint32_t Therapy_GetMaskOnCount(void)       { return g_therapy_mask_on_count; }
 uint32_t Therapy_GetRunSeconds(void)    { return g_therapy_run_ms / 1000U; }
+uint32_t Therapy_GetSessionMaskOffSeconds(void) { return g_therapy_session_mask_off_ms / 1000U; }
 
 float Therapy_GetSessionPressureAvg(void)
 {
@@ -2431,6 +2435,7 @@ void Therapy_Start(void)
     g_therapy_ramp_elapsed_ms = 0U;
     g_therapy_stop_elapsed_ms = 0U;
     g_therapy_run_ms         = 0U;
+    g_therapy_session_mask_off_ms = 0U;
     sessionPressureReset();
     Safety_Supervisor_ResetFaultTimers();
     s_therapy_start_ms       = HAL_GetTick();
@@ -2509,6 +2514,7 @@ void Therapy_Start(void)
     (void)BlowerIpc_CM7_Start();
 
     SessionEdf_OnTherapyStart();
+    SessionSummary_OnTherapyStart();
 
     DBG_I("THR", "start target=%.1f epr=%u lvl=%u exp=%.1f cmH2O ramp=%u min",
           (double)s_session_target_cmh2o,
@@ -2558,6 +2564,7 @@ void Therapy_Stop(void)
     setState(THERAPY_STATE_STOPPING);
 
     sessionPressureRefreshCaches();
+    SessionSummary_OnTherapyStop();   /* #57: snapshot after the refresh */
     DBG_I("THR", "stop after %lu s  P50=%.1f P90=%.1f P95=%.1f avg=%.1f",
           (unsigned long)Therapy_GetRunSeconds(),
           (double)g_therapy_session_p50,
@@ -2628,6 +2635,7 @@ void Therapy_Update(float dt_s)
         if (updateMaskOff(dt_s, dt_ms))
         {
             g_therapy_run_ms += dt_ms;
+            g_therapy_session_mask_off_ms += dt_ms;
             break;
         }
         maskOffResumeBoost(dt_s, dt_ms);
@@ -2663,6 +2671,7 @@ void Therapy_Update(float dt_s)
         if (updateMaskOff(dt_s, dt_ms))
         {
             g_therapy_run_ms += dt_ms;
+            g_therapy_session_mask_off_ms += dt_ms;
             break;
         }
         maskOffResumeBoost(dt_s, dt_ms);

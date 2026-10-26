@@ -49,6 +49,7 @@
 #include "therapy.h"
 #include "session_edf_log.h"
 #include "rtc_clock.h"
+#include "session_summary.h"
 #include "physiology_telem.h"
 #include "safety_supervisor.h"
 /* USER CODE END Includes */
@@ -2877,6 +2878,7 @@ static void SelfTestTask(void *argument)
 
     /* FatFs session logger — never runs in SensorTask / Therapy_Start. */
     SessionEdf_Service();
+    SessionSummary_Service();   /* #57: SUMMARY.CSV */
 
     if (sdram_test_step != 100U)
     {
