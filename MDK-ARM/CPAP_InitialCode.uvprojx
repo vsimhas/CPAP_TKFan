@@ -1052,6 +1052,11 @@
               <FilePath>..\CM7\Core\Src\session_summary.c</FilePath>
             </File>
             <File>
+              <FileName>adherence.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\adherence.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4928,6 +4933,11 @@
               <FileName>session_summary.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\session_summary.c</FilePath>
+            </File>
+            <File>
+              <FileName>adherence.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\adherence.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>

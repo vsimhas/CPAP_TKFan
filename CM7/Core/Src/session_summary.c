@@ -11,6 +11,7 @@
 #include "therapy.h"
 #include "leak_estimator.h"
 #include "apap_ctrl.h"
+#include "adherence.h"
 #include "ff.h"
 #include "main.h"
 
@@ -191,6 +192,7 @@ void SessionSummary_Service(void)
     {
         s_written++;
         s_error = 0U;
+        Adherence_OnRecordWritten(s_line);   /* #65 */
     }
     else
     {

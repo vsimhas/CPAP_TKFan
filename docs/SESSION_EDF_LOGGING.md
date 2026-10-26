@@ -64,6 +64,35 @@ The record is snapshotted in RAM at stop and written while the card is mounted (
 logging enabled). `therapy summary` prints the last record over USB (`# SUMR`) with
 its column header (`# SUMH`), and `pending/written/err` for the card write.
 
+## Adherence (checklist #65)
+
+Computed on the device from `SUMMARY.CSV`: the file is read once each time the card is
+mounted (columns found by header name), and every new session record is added as it is
+written. `therapy adherence` prints, for example:
+
+```
+# ADH built=1 clock=1 night=2026-10-26 days=30 used=25 ge4h=20 pct4h=67 avg_min=236
+  avg_used_min=284 first=2026-07-03 since=116 sessions=113 undated=1 total_h=485 best30=23 met=1
+```
+
+- **Night:** a session counts toward the night it **started** in, split at noon like
+  ResMed (a start before 12:00 belongs to the previous date). Usage is `mask_on_s`.
+- **Window:** the last 30 nights ending tonight (tonight included), never before first
+  use: `used` (any usage), `ge4h` (>= 4 h), `pct4h`, `avg_min` over all nights and
+  `avg_used_min` over nights used.
+- **Reimbursement test:** `best30` = most nights >= 4 h in any 30 consecutive nights
+  within the first 90 from first use; `met=1` at >= 21 (70 %). `/partial` while fewer
+  than 30 nights exist.
+- **Clock:** `clock=0` means the RTC is not set (e.g. after a power cycle without a VBAT
+  battery); tonight is then the last night that has a session. Records without a valid
+  clock count as `undated` and are left out. Local time as set; no DST / time zone.
+
+Cross-check a card on the PC with the same definitions:
+
+```
+python pc_tools/adherence_check.py SUMMARY.CSV --now "2026-10-26 16:06:11"
+```
+
 ## OSCAR
 
 Copy the card (or its `DATALOG`, `STR.edf`, `Identification.json`) and import it in

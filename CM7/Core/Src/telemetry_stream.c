@@ -30,6 +30,7 @@
 #include "session_edf_log.h"
 #include "rtc_clock.h"
 #include "session_summary.h"
+#include "adherence.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1919,6 +1920,19 @@ static void Telem_ProcessOneCommand(const char *cmd)
     SessionEdf_SetDateTime((uint8_t)yy, (uint8_t)mo, (uint8_t)dd,
                            (uint8_t)hh, (uint8_t)mi, (uint8_t)ss);
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #65: adherence from the session records on the card (adherence.h). */
+  if (strcmp(cmd, "therapy adherence") == 0)
+  {
+    char line[320];
+    const int n = Adherence_Format(line, sizeof(line));
+    Telem_PushAck(cmd);
+    if (n > 0)
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
     return;
   }
 
