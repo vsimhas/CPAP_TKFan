@@ -287,6 +287,10 @@ void Adherence_Service(void)
 {
     if (!SessionEdf_IsMounted())
     {
+        if (s_built)
+        {
+            reset();                     /* nothing left over from the old card */
+        }
         s_built = false;                 /* rebuild for whichever card is next */
         return;
     }

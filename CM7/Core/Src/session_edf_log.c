@@ -65,7 +65,12 @@ static uint8_t s_file_seq = 0U;
 
 static volatile uint8_t s_req_start = 0U;
 static volatile uint8_t s_req_stop = 0U;
-static volatile uint8_t s_req_mount = 0U;
+static volatile uint8_t s_req_mount = 0U;    /* retry after a failed mount */
+/* The card is mounted whenever one is in and has passed its self-test,
+ * whether or not EDF logging is enabled: SUMMARY.CSV (#57) and adherence
+ * (#65) need it for every session. A failed mount is not retried until the
+ * card is reinserted or "therapy edf enable 1" is sent. */
+static uint8_t s_mount_gave_up = 0U;
 static volatile uint8_t s_collecting = 0U;
 
 /* BRP: the 25 Hz waveform file. Labels, units and file suffix follow the
@@ -460,12 +465,32 @@ void SessionEdf_Init(void)
 
 void SessionEdf_SetEnable(bool en)
 {
+    /* Waveform logging on therapy start only - the card is mounted either
+     * way. Enabling also retries a mount that failed. */
     g_session_edf_enable = en ? 1U : 0U;
-    /* Mount (or leave unmounted) asynchronously in SessionEdf_Service(). */
     if (en)
     {
         s_req_mount = 1U;
     }
+}
+
+/* The card went away: forget the volume and any open files WITHOUT I/O to
+ * the missing card, so nothing waits on SDMMC timeouts. */
+static void detachCard(void)
+{
+    if (s_edf.open || s_pld.open || (s_eve_open != 0U))
+    {
+        setErr(0x1000U);                     /* removed during a session */
+    }
+    s_edf.open = false;
+    s_pld.open = false;
+    s_eve_open = 0U;
+    (void)f_mount(NULL, "0:", 0);
+    s_mounted = 0U;
+    s_collecting = 0U;
+    s_pend_count = 0U;
+    s_write_n = 0U;
+    s_write_fail_streak = 0U;
 }
 
 bool SessionEdf_IsEnabled(void)
@@ -913,39 +938,38 @@ void SessionEdf_Service(void)
         {
             g_session_edf_state = (uint8_t)SESSION_EDF_IDLE;
         }
-        /* Volume stays mounted while EDF remains enabled. */
+        /* Volume stays mounted while the card is in. */
         s_pend_count = 0U;
         s_write_n = 0U;
         s_write_fail_streak = 0U;
     }
 
-    if (s_req_mount != 0U)
+    /* Card presence drives the mount, not the EDF enable (see s_mount_gave_up). */
+    if ((sd_card_present == 0U) || (s_req_mount != 0U))
     {
-        if (g_session_edf_enable == 0U)
+        s_mount_gave_up = 0U;                /* new card, or an explicit retry */
+        s_req_mount = 0U;
+    }
+    {
+        const bool card_ok = (sd_card_present != 0U) && (sd_test_result == HAL_OK)
+                          && (sd_fatfs_ready != 0U);
+        if ((s_mounted != 0U) && !card_ok)
         {
-            s_req_mount = 0U;
+            detachCard();
         }
-        else if (SessionEdf_Mount())
+        else if ((s_mounted == 0U) && card_ok && (s_mount_gave_up == 0U))
         {
-            s_req_mount = 0U;
-            g_session_edf_error = 0U;
-            if (g_session_edf_state == (uint8_t)SESSION_EDF_ERROR)
+            if (SessionEdf_Mount())
             {
-                g_session_edf_state = (uint8_t)SESSION_EDF_IDLE;
+                g_session_edf_error = 0U;
+                if (g_session_edf_state == (uint8_t)SESSION_EDF_ERROR)
+                {
+                    g_session_edf_state = (uint8_t)SESSION_EDF_IDLE;
+                }
             }
-        }
-        else if ((sd_test_result != HAL_OK) || (sd_fatfs_ready == 0U))
-        {
-            /* Keep trying while self-test retries / settle completes. */
-            s_req_mount = 1U;
-        }
-        else
-        {
-            /* Hard FatFs/disk failure — stop hammering SDMMC. Re-Apply Enable to retry. */
-            s_req_mount = 0U;
-            if (g_session_edf_state == (uint8_t)SESSION_EDF_ERROR)
+            else
             {
-                /* leave ERROR so Query shows err; clear on next successful mount */
+                s_mount_gave_up = 1U;        /* hard FatFs failure: stop hammering SDMMC */
             }
         }
     }

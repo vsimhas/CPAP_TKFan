@@ -11,9 +11,9 @@
   *  bump it, so older records stay readable.
   *
   *  The snapshot is taken in RAM at Therapy_Stop; the SD write happens in
-  *  SessionSummary_Service() (SelfTestTask), only while the card is mounted
-  *  (EDF logging enabled). `therapy summary` prints the last record over USB
-  *  whether or not it reached the card.
+  *  SessionSummary_Service() (SelfTestTask) once the card is mounted - it is
+  *  mounted whenever one is in, EDF logging on or not. `therapy summary`
+  *  prints the last record over USB whether or not it reached the card.
   ******************************************************************************
   */
 

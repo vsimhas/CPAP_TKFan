@@ -60,8 +60,11 @@ schema version: columns are only ever added at the end, with the version bumped.
 | `ahi`, `rdi`, `si` | per hour of **mask-on** time |
 | `edf` | the session's DATALOG name, e.g. `20261026_140818` |
 
-The record is snapshotted in RAM at stop and written while the card is mounted (EDF
-logging enabled). `therapy summary` prints the last record over USB (`# SUMR`) with
+The record is snapshotted in RAM at stop and written to the card. The card is mounted
+whenever one is in and has passed its self-test, **whether or not EDF logging is
+enabled** - `therapy edf enable` only switches the BRP/PLD/EVE waveform files. Pulling
+the card unmounts it (open files are dropped without touching the missing card); a
+failed mount is retried on the next insertion or `therapy edf enable 1`. `therapy summary` prints the last record over USB (`# SUMR`) with
 its column header (`# SUMH`), and `pending/written/err` for the card write.
 
 ## Adherence (checklist #65)

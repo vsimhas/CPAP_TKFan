@@ -36,7 +36,9 @@ typedef enum
 
 void SessionEdf_Init(void);
 
-/* Enable/disable auto-start on Therapy_Start (default OFF). */
+/* Enable/disable waveform logging (BRP/PLD/EVE) on Therapy_Start (default
+ * OFF). The card is mounted whenever one is in, either way - SUMMARY.CSV and
+ * adherence use it for every session. Enabling also retries a failed mount. */
 void SessionEdf_SetEnable(bool en);
 bool SessionEdf_IsEnabled(void);
 
