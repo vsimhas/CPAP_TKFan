@@ -2,55 +2,51 @@
 
 ## What this is
 
-When therapy starts, CM7 writes a classic **EDF** (European Data Format) file to the
-root of a FAT-formatted SD card:
+When therapy starts, CM7 writes one session to the FAT-formatted SD card in the
+ResMed card **layout**, which OSCAR's own ResMed loader recognises (only the
+layout is borrowed: `Identification.json` carries our identity, not a ResMed
+serial):
 
 ```
-0:/YYmmddNN.EDF
+0:/Identification.json, 0:/STR.edf                       (once per card)
+0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_BRP.edf   25 Hz waveforms
+0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_PLD.edf    1 Hz summary channels
+0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_EVE.edf    scored events (EDF+ annotations)
 ```
 
-`NN` is chosen by probing for the first unused name, so **each therapy start creates a
-new file** and never overwrites a previous session. Subdirectories are avoided because
-`f_mkdir` writes were timing out on this SDMMC bus.
+The date and time come from the RTC (see Setup). Each therapy start makes a new
+set; a second session in the same second bumps the seconds field.
 
-Signals (1 s records, 25 Hz):
+| File | Records | Signals |
+|------|---------|---------|
+| BRP | 1 s @ 25 Hz | `Flow.40ms` (L/s), `Press.40ms` (cmH2O) |
+| PLD | 1 s @ 1 Hz | `MaskPress.2s`, `Press.2s` (target), `Leak.2s` (L/s) |
+| EVE | EDF+D, 64-byte records | `EDF Annotations` + `Crc16` |
 
-| Label    | Meaning              | Unit  |
-|----------|----------------------|-------|
-| Flow     | Patient flow         | L/min |
-| Pressure | Mask pressure        | cmH2O |
-| Leak     | Unintentional leak   | L/min |
-| TargetP  | Therapy target       | cmH2O |
+**EVE** (checklist #59) follows the AirSense 11's own file byte for byte: the
+first record is `Recording starts`, then one record per scored event,
+`Obstructive Apnea`, `Central Apnea` or `Hypopnea`. As with ResMed, an event is
+stamped at its **end** (seconds from the file start) and carries its duration:
 
-View with **EDFbrowser**, MATLAB, Python (`pyedflib` / MNE), etc.
+- an apnea is written when its episode ends, with the episode's length;
+- a central apnea that may still be re-scored as a hypopnea (R4, 30 s window) is
+  held until that window closes, and dropped if re-scored;
+- a hypopnea is written when breathing recovers.
 
-To check a file without a viewer (header fields, size consistency and decoded
-physical values):
+Flow limitation and snore have no EVE entry in OSCAR's loader; they belong in PLD as
+continuous indices (#60/#61). `STR.edf` is still a header-only stub (#57).
+
+Inspect a file without a viewer:
 
 ```
-python pc_tools/edf_inspect.py 26082100.EDF
-python pc_tools/edf_inspect.py 26082100.EDF --dump TargetP --seconds 5
+python pc_tools/edf_inspect.py <file>.edf
 ```
 
-In EDFbrowser, load all four traces with **Select All** then **Add signal(s)**.
-The `Add ->` arrow builds a *derivation*, which requires every signal to share one
-physical dimension — these do not (`L/min` and `cmH2O`), so it reports
-"Cannot make derivation".
+## OSCAR
 
-## OSCAR — important limitation
-
-**OSCAR will not import these files as-is.**
-
-OSCAR expects a **vendor SD-card layout** (e.g. ResMed `DATALOG/` + `SETTINGS/` +
-`Identification.*` + proprietary companion files). Cloning that layout would mean
-reproducing another manufacturer’s proprietary card format, which this project
-does not do.
-
-Practical paths:
-
-1. Use **EDFbrowser** (or similar) for waveform review today.
-2. Later: a **SomnaLink-specific OSCAR machine loader** (open-source plugin) that
-   reads these `.EDF` files — that is the correct long-term OSCAR integration.
+Copy the card (or its `DATALOG`, `STR.edf`, `Identification.json`) and import it in
+OSCAR as a ResMed card. BRP gives the flow / pressure graphs, PLD the leak and
+target pressure, and EVE the event flags (OA / CA / H) on the flow graph.
 
 ## Setup
 

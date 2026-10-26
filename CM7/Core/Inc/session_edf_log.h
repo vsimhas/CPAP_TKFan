@@ -7,6 +7,7 @@
  *      0:/Identification.json, 0:/STR.edf
  *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_BRP.edf   25 Hz waveforms
  *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_PLD.edf    1 Hz summary
+ *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_EVE.edf    scored events (EDF+)
  *
  *  BRP (1 s records @ 25 Hz): Flow.40ms (L/s), Press.40ms (cmH2O).
  *  PLD (1 s records @ 1 Hz):  MaskPress.2s, Press.2s, Leak.2s.
@@ -39,7 +40,8 @@ void SessionEdf_Init(void);
 void SessionEdf_SetEnable(bool en);
 bool SessionEdf_IsEnabled(void);
 
-/* Wall-clock for EDF header (no RTC on board — set via USB). */
+/* Wall-clock for the EDF header; also sets the RTC (rtc_clock.h), which is
+ * what sessions are stamped from once it runs. */
 void SessionEdf_SetDateTime(uint8_t yy, uint8_t mo, uint8_t dd,
                             uint8_t hh, uint8_t mi, uint8_t ss);
 
@@ -68,6 +70,31 @@ uint32_t          SessionEdf_GetFileSize(void);  /* last known FatFs size */
 uint32_t          SessionEdf_GetPldRecords(void);
 uint32_t          SessionEdf_GetPldError(void);
 const char*       SessionEdf_GetPldPath(void);
+
+/* EVE companion file (checklist #59): scored respiratory events as EDF+
+ * annotations, in the ResMed DATALOG/.../YYYYMMDD_HHMMSS_EVE.edf form that
+ * OSCAR's loader reads. Like ResMed, an event is stamped at its END and
+ * carries its duration. Events are queued in RAM from the therapy tick and
+ * written by SessionEdf_Service(); best-effort like PLD. Error encoding:
+ * 0x5Sxx, S = stage (1 open, 2 header, 3 record, 4 count), xx = FRESULT. */
+typedef enum
+{
+    SESSION_EVT_OBSTRUCTIVE_APNEA = 0,
+    SESSION_EVT_CENTRAL_APNEA,
+    SESSION_EVT_HYPOPNEA,
+    SESSION_EVT_COUNT
+} SessionEdfEvent_t;
+
+/* Session clock in 40 ms ticks (the BRP sample clock), so annotations line
+ * up with the waveform. Only meaningful while SessionEdf_IsLogging(). */
+bool              SessionEdf_IsLogging(void);
+uint32_t          SessionEdf_NowTicks(void);
+/* Dropped when not logging or when the RAM queue is full. */
+void              SessionEdf_LogEvent(SessionEdfEvent_t type, uint32_t end_ticks,
+                                      float dur_s);
+uint32_t          SessionEdf_GetEveRecords(void);
+uint32_t          SessionEdf_GetEveError(void);
+const char*       SessionEdf_GetEvePath(void);
 
 /* Mount/unmount helpers (also used by USB status). */
 bool SessionEdf_Mount(void);

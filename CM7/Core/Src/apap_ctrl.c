@@ -17,6 +17,7 @@
 #include "blower_ctrl.h"
 #include "flow_sensor.h"
 #include "leak_estimator.h"
+#include "session_edf_log.h"
 #include "stm32h7xx_hal.h"
 
 #include <math.h>
@@ -346,6 +347,20 @@ static uint32_t   s_since_hyp_ms = 0xFFFFFFFFU;
 static bool       s_episode_after_hyp = false;
 static bool       s_deferred_ca = false;
 static bool       s_deferred_oa = false;
+/* #59: scored events into the session EVE file (session_edf_log.h). ResMed
+ * stamps an event at its END with its duration, so an apnea is written when
+ * its episode ends and a hypopnea when breathing recovers. A CA that R4 may
+ * still turn into a Hyp is held until that window closes. */
+#define EV_TICK_MS        40U        /* SessionEdf_NowTicks() unit */
+static bool       s_ev_apnea_pending = false;
+static SessionEdfEvent_t s_ev_apnea_type = SESSION_EVT_CENTRAL_APNEA;
+static bool       s_ev_hold = false;
+static uint32_t   s_ev_hold_end = 0U;
+static float      s_ev_hold_dur_s = 0.0f;
+static bool       s_ev_hyp_open = false;
+static uint32_t   s_ev_hyp_start = 0U;
+static uint32_t   s_ev_hyp_recov_start = 0U;   /* first breath of the recovery */
+static void       evNoteApnea(SessionEdfEvent_t type);
 /* R1: detector progress saved at NO_BREATH entry, restored if the episode
  * ends without ever reaching FOT (a hypopnea that briefly lost a breath). */
 static bool       s_episode_reached_fot = false;
@@ -614,8 +629,8 @@ static void restoreDetectorsAfterEpisode(void)
     {
         if (!ended_limited)
         {
-            if (s_deferred_oa) { g_apap_evt_oa++; }
-            else               { g_apap_evt_ca++; }
+            if (s_deferred_oa) { g_apap_evt_oa++; evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA); }
+            else               { g_apap_evt_ca++; evNoteApnea(SESSION_EVT_CENTRAL_APNEA); }
             s_apnea_need_recovery = true;
         }
         s_deferred_oa = false;
@@ -656,9 +671,84 @@ static void releaseLeakFreeze(void)
     s_leak_freeze_ms = 0U;
 }
 
+static void evNoteApnea(SessionEdfEvent_t type)
+{
+    s_ev_apnea_pending = true;
+    s_ev_apnea_type = type;
+}
+
+static void evFlushHold(void)
+{
+    if (s_ev_hold)
+    {
+        SessionEdf_LogEvent(SESSION_EVT_CENTRAL_APNEA, s_ev_hold_end, s_ev_hold_dur_s);
+        s_ev_hold = false;
+    }
+}
+
+/* Episode over (s_episode_ms still holds its length). */
+static void evEndEpisode(void)
+{
+    if (!s_ev_apnea_pending)
+    {
+        return;
+    }
+    s_ev_apnea_pending = false;
+    const uint32_t now = SessionEdf_NowTicks();
+    const float dur_s = (float)s_episode_ms / 1000.0f;
+    if ((s_ev_apnea_type == SESSION_EVT_CENTRAL_APNEA) && (s_pending_ca_ms > 0U))
+    {
+        evFlushHold();
+        s_ev_hold = true;               /* R4 may still reclassify it */
+        s_ev_hold_end = now;
+        s_ev_hold_dur_s = dur_s;
+    }
+    else
+    {
+        SessionEdf_LogEvent(s_ev_apnea_type, now, dur_s);
+    }
+}
+
+static void evHypOpen(uint32_t limited_ms)
+{
+    const uint32_t now = SessionEdf_NowTicks();
+    const uint32_t back = limited_ms / EV_TICK_MS;
+    s_ev_hyp_start = (now > back) ? (now - back) : 0U;
+    s_ev_hyp_open = true;
+}
+
+static void evHypClose(uint32_t end_ticks)
+{
+    if (!s_ev_hyp_open)
+    {
+        return;
+    }
+    s_ev_hyp_open = false;
+    if (end_ticks < s_ev_hyp_start)
+    {
+        end_ticks = s_ev_hyp_start;
+    }
+    SessionEdf_LogEvent(SESSION_EVT_HYPOPNEA, end_ticks,
+                        (float)((end_ticks - s_ev_hyp_start) * EV_TICK_MS) / 1000.0f);
+}
+
+/* Therapy stop: write whatever is still open, ended now. */
+static void evFlushAll(void)
+{
+    const uint32_t now = SessionEdf_NowTicks();
+    evHypClose(now);
+    if (s_ev_apnea_pending)
+    {
+        s_ev_apnea_pending = false;
+        SessionEdf_LogEvent(s_ev_apnea_type, now, (float)s_episode_ms / 1000.0f);
+    }
+    evFlushHold();
+}
+
 static void exitProbeToMonitor(void)
 {
     restoreDetectorsAfterEpisode();
+    evEndEpisode();               /* #59, after R8b resolved deferred scores */
     releaseLeakFreeze();          /* R5b */
     disableOsc();
     s_osa_treating = false;
@@ -920,11 +1010,13 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
                 s_hyp_active = true;
                 s_hyp_need_recovery = true;   /* R2: no re-count until recovery */
                 g_apap_evt_hyp++;
+                evHypOpen(s_hyp_limited_ms);  /* #59 */
                 s_since_hyp_ms = 0U;          /* R8b */
                 if ((s_pending_ca_ms > 0U) && (g_apap_evt_ca > 0U))
                 {
                     g_apap_evt_ca--;          /* R4: same event, now a Hyp */
                     s_pending_ca_ms = 0U;
+                    s_ev_hold = false;        /* #59: so no CA annotation */
                 }
                 s_hyp_hold_ms = (uint32_t)(clampf(g_apap_hyp_hold_s, 5.0f, 120.0f)
                                            * 1000.0f);
@@ -944,6 +1036,13 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
             if (peak_slm >= (rearm_ratio * s_fl_baseline_slm))
             {
                 if (s_hyp_rearm_n < 255U) { s_hyp_rearm_n++; }
+                if (s_hyp_rearm_n == 1U)
+                {
+                    /* #59: where this recovered breath began. */
+                    const uint32_t now = SessionEdf_NowTicks();
+                    const uint32_t back = s_insp_ms / EV_TICK_MS;
+                    s_ev_hyp_recov_start = (now > back) ? (now - back) : 0U;
+                }
             }
             else
             {
@@ -952,6 +1051,10 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
             if (s_hyp_rearm_n >= rearm_need)
             {
                 s_hyp_need_recovery = false;  /* breathing recovered: re-arm */
+                /* #59: the hypopnea ends with the same rule, not at the first
+                 * breath over the 0.50 line - breaths that hover around it
+                 * (a 55 % hypopnea at 49-51 %) logged 13 s of a 40 s event. */
+                evHypClose(s_ev_hyp_recov_start);
             }
             if (!s_hyp_active)
             {
@@ -1388,6 +1491,9 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
     s_episode_after_hyp = false;
     s_deferred_ca = false;
     s_deferred_oa = false;
+    s_ev_apnea_pending = false;   /* #59 */
+    s_ev_hold = false;
+    s_ev_hyp_open = false;
     releaseLeakFreeze();
     Flow_FotBpReset(&s_breath_notch_bp);
     resetBreathDetectors();
@@ -1398,6 +1504,7 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
 
 void Apap_OnTherapyStop(void)
 {
+    evFlushAll();                 /* #59 */
     s_active = false;
     s_osa_treating = false;
     g_apap_osa_treating = 0U;
@@ -1578,6 +1685,10 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
     const uint32_t dt_ms = (uint32_t)lrintf(dt_s * 1000.0f);
     g_apap_therapy_ms += dt_ms;
     s_pending_ca_ms = (s_pending_ca_ms > dt_ms) ? (s_pending_ca_ms - dt_ms) : 0U;
+    if (s_ev_hold && (s_pending_ca_ms == 0U))
+    {
+        evFlushHold();                 /* #59: not reclassified - it stands */
+    }
     if (s_since_hyp_ms < 0x7FFFFFFFU) { s_since_hyp_ms += dt_ms; }
     if (s_leak_frozen)
     {
@@ -1647,6 +1758,13 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
                 Leak_SetApneaFreeze(true);
                 s_leak_frozen = true;
                 s_leak_freeze_ms = 0U;
+            }
+            {
+                /* #59: a hypopnea in progress ended at the last breath. */
+                const uint32_t now = SessionEdf_NowTicks();
+                const uint32_t back = (uint32_t)(clampf(g_apap_breath_window_s, 4.0f, 30.0f)
+                                                 * 1000.0f) / EV_TICK_MS;
+                evHypClose((now > back) ? (now - back) : 0U);
             }
             resetBreathDetectors();
             g_apap_stable_ms = 0U;
@@ -1722,6 +1840,7 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
                     else
                     {
                         g_apap_evt_oa++;
+                        evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA);
                         s_apnea_need_recovery = true;
                     }
                     s_osa_event_armed = false;
@@ -1737,6 +1856,7 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
                     else
                     {
                         g_apap_evt_ca++;
+                        evNoteApnea(SESSION_EVT_CENTRAL_APNEA);
                         s_apnea_need_recovery = true;
                         s_episode_scored_ca = true;
                     }
@@ -1757,6 +1877,7 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
                 else
                 {
                     g_apap_evt_oa++;
+                    evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA);
                     s_apnea_need_recovery = true;
                 }
                 s_osa_event_armed = false;

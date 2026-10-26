@@ -1815,10 +1815,12 @@ static void Telem_ProcessOneCommand(const char *cmd)
     extern volatile uint32_t g_diskio_fail_count;
     extern volatile uint32_t sd_test_fail_step;
     extern volatile uint32_t sd_hal_error;
-    char line[400];
+    extern volatile uint32_t g_session_edf_eve_dropped;
+    char line[512];
     int n = snprintf(line, sizeof(line),
                      "# EDF en=%u st=%s path=%s rec=%lu fsize=%lu err=0x%lX "
                      "pld=%s pldrec=%lu plderr=0x%lX "
+                     "eve=%s everec=%lu eveerr=0x%lX evedrop=%lu "
                      "mounted=%u sd=%u test=%d fatfs=%u fail_step=%lu "
                      "sd_hal=0x%lX dio_err=0x%lX dio_n=%lu\r\n",
                      SessionEdf_IsEnabled() ? 1U : 0U,
@@ -1830,6 +1832,10 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      SessionEdf_GetPldPath(),
                      (unsigned long)SessionEdf_GetPldRecords(),
                      (unsigned long)SessionEdf_GetPldError(),
+                     SessionEdf_GetEvePath(),
+                     (unsigned long)SessionEdf_GetEveRecords(),
+                     (unsigned long)SessionEdf_GetEveError(),
+                     (unsigned long)g_session_edf_eve_dropped,
                      SessionEdf_IsMounted() ? 1U : 0U,
                      (unsigned)sd_card_present,
                      (int)sd_test_result,

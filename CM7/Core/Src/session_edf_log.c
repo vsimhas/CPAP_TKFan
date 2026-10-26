@@ -34,6 +34,10 @@ volatile uint32_t g_session_edf_fsize  = 0U;
  * make that state visible via `therapy edf status`. */
 volatile uint32_t g_session_edf_pld_error   = 0U;
 volatile uint32_t g_session_edf_pld_records = 0U;
+/* EVE (checklist #59): see session_edf_log.h. */
+volatile uint32_t g_session_edf_eve_records = 0U;   /* incl. "Recording starts" */
+volatile uint32_t g_session_edf_eve_error   = 0U;
+volatile uint32_t g_session_edf_eve_dropped = 0U;   /* queue full / not logging */
 
 #define EDF_HZ              25U
 #define EDF_REC_S           1U
@@ -119,6 +123,237 @@ static uint16_t s_pld_acc_n = 0U;
 static char     s_pld_path[64];
 static char     s_dir_path[32];
 
+/* ---- EVE annotation file (checklist #59) ---------------------------------
+ * Byte-for-byte the layout of the AirSense 11's own EVE.edf (checked on the
+ * 20 Oct 2026 reference card): EDF+D, two signals "EDF Annotations" (31
+ * samples = 62 bytes) and "Crc16" (1 sample), record duration 0. Each 64-byte
+ * record is a time-keeping TAL "+0" followed by one event TAL
+ * "+<onset>\x15<duration>\x14<text>\x14", zero-padded, then CRC-16/CCITT-
+ * FALSE (poly 0x1021, init 0xFFFF) of the 62 annotation bytes, little-endian.
+ * The first record is "Recording starts". Onset is whole seconds from the
+ * header start time and marks the event's END (ResMed's convention, which
+ * OSCAR follows); OSCAR matches the text case-insensitively by prefix. */
+#define EVE_REC_BYTES       64U
+#define EVE_ANN_BYTES       62U
+#define EVE_HDR_BYTES       768U
+#define EVE_NREC_OFFSET     236U
+#define EVE_Q_N             16U
+#define EDF_TICKS_PER_S     EDF_HZ           /* 40 ms session ticks */
+
+typedef struct
+{
+    uint8_t  type;
+    uint32_t end_ticks;
+    uint16_t dur_ds;                         /* 0.1 s */
+} EveItem_t;
+
+static FIL      s_eve_fil;
+static uint8_t  s_eve_open = 0U;
+static char     s_eve_path[64];
+static EveItem_t s_eve_q[EVE_Q_N];
+static volatile uint8_t s_eve_q_head = 0U;   /* producer: therapy tick */
+static volatile uint8_t s_eve_q_tail = 0U;   /* consumer: Service */
+static volatile uint32_t s_ticks = 0U;       /* BRP samples since open */
+
+static const char * const k_eve_text[SESSION_EVT_COUNT] = {
+    "Obstructive Apnea", "Central Apnea", "Hypopnea"
+};
+
+static uint16_t crc16CcittFalse(const uint8_t *p, uint32_t n)
+{
+    uint16_t crc = 0xFFFFU;
+    for (uint32_t i = 0U; i < n; i++)
+    {
+        crc ^= (uint16_t)((uint16_t)p[i] << 8);
+        for (uint32_t b = 0U; b < 8U; b++)
+        {
+            crc = ((crc & 0x8000U) != 0U) ? (uint16_t)((crc << 1) ^ 0x1021U)
+                                          : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+/* One 64-byte record: "+0" 0x14 0x14 0x00, then "+<onset>" 0x15 "<dur>" 0x14
+ * "<text>" 0x14 0x00, zero padding, CRC. */
+static void eveBuildRecord(uint8_t rec[EVE_REC_BYTES], uint32_t onset_s,
+                           uint32_t dur_s, const char *text)
+{
+    memset(rec, 0, EVE_REC_BYTES);
+    uint32_t n = 0U;
+    rec[n++] = (uint8_t)'+';
+    rec[n++] = (uint8_t)'0';
+    rec[n++] = 0x14U;
+    rec[n++] = 0x14U;
+    rec[n++] = 0x00U;
+    const int m = snprintf((char *)&rec[n], EVE_ANN_BYTES - n, "+%lu%c%lu%c%s%c",
+                           (unsigned long)onset_s, 0x15, (unsigned long)dur_s,
+                           0x14, text, 0x14);
+    if ((m > 0) && ((uint32_t)m < (EVE_ANN_BYTES - n)))
+    {
+        n += (uint32_t)m;
+        rec[n] = 0x00U;                      /* TAL terminator */
+    }
+    const uint16_t crc = crc16CcittFalse(rec, EVE_ANN_BYTES);
+    rec[EVE_ANN_BYTES]      = (uint8_t)(crc & 0xFFU);
+    rec[EVE_ANN_BYTES + 1U] = (uint8_t)(crc >> 8);
+}
+
+static void eveSetErr(uint32_t stage, FRESULT fr)
+{
+    g_session_edf_eve_error = 0x5000U | ((stage & 0xFU) << 8) | ((uint32_t)fr & 0xFFU);
+}
+
+/* Header record count, rewritten after each batch so a session cut short
+ * (power loss) still reads back with the events written so far. */
+static bool eveWriteCount(void)
+{
+    char f[9];
+    UINT bw = 0U;
+    (void)snprintf(f, sizeof(f), "%-8lu", (unsigned long)g_session_edf_eve_records);
+    FRESULT fr = f_lseek(&s_eve_fil, EVE_NREC_OFFSET);
+    if (fr == FR_OK) { fr = f_write(&s_eve_fil, f, 8U, &bw); }
+    if ((fr != FR_OK) || (bw != 8U))
+    {
+        eveSetErr(4U, fr);
+        return false;
+    }
+    return true;
+}
+
+static bool eveAppend(const uint8_t rec[EVE_REC_BYTES])
+{
+    UINT bw = 0U;
+    const FSIZE_t at = (FSIZE_t)EVE_HDR_BYTES
+                     + ((FSIZE_t)g_session_edf_eve_records * EVE_REC_BYTES);
+    FRESULT fr = f_lseek(&s_eve_fil, at);
+    if (fr == FR_OK) { fr = f_write(&s_eve_fil, rec, EVE_REC_BYTES, &bw); }
+    if ((fr != FR_OK) || (bw != EVE_REC_BYTES))
+    {
+        eveSetErr(3U, fr);
+        return false;
+    }
+    g_session_edf_eve_records++;
+    return true;
+}
+
+static void eveField(char *hdr, uint32_t off, uint32_t width, const char *text)
+{
+    const size_t len = strlen(text);
+    memcpy(&hdr[off], text, (len < width) ? len : width);
+}
+
+static void eveOpen(const char *patient, const char *recording)
+{
+    static char hdr[EVE_HDR_BYTES];
+    char tmp[24];
+    UINT bw = 0U;
+    uint8_t rec[EVE_REC_BYTES];
+
+    s_eve_open = 0U;
+    g_session_edf_eve_records = 0U;
+    g_session_edf_eve_error = 0U;
+    g_session_edf_eve_dropped = 0U;
+
+    FRESULT fr = f_open(&s_eve_fil, s_eve_path, FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr != FR_OK)
+    {
+        eveSetErr(1U, fr);
+        return;
+    }
+    memset(hdr, ' ', sizeof(hdr));
+    eveField(hdr, 0U, 8U, "0");
+    eveField(hdr, 8U, 80U, patient);
+    eveField(hdr, 88U, 80U, recording);
+    (void)snprintf(tmp, sizeof(tmp), "%02u.%02u.%02u",
+                   (unsigned)s_dd, (unsigned)s_mo, (unsigned)s_yy);
+    eveField(hdr, 168U, 8U, tmp);
+    (void)snprintf(tmp, sizeof(tmp), "%02u.%02u.%02u",
+                   (unsigned)s_hh, (unsigned)s_mi, (unsigned)s_ss);
+    eveField(hdr, 176U, 8U, tmp);
+    eveField(hdr, 184U, 8U, "768");
+    eveField(hdr, 192U, 44U, "EDF+D");
+    eveField(hdr, 236U, 8U, "0");
+    eveField(hdr, 244U, 8U, "0.00");
+    eveField(hdr, 252U, 4U, "2");
+    /* Signal headers: each field for both signals in turn (EDF layout). */
+    eveField(hdr, 256U, 16U, "EDF Annotations");
+    eveField(hdr, 272U, 16U, "Crc16");
+    /* transducer 2x80 and dimension 2x8 stay blank */
+    eveField(hdr, 464U, 8U, "-32768.0");     /* physical min */
+    eveField(hdr, 472U, 8U, "-32768.0");
+    eveField(hdr, 480U, 8U, "32767.00");     /* physical max */
+    eveField(hdr, 488U, 8U, "32767.00");
+    eveField(hdr, 496U, 8U, "-32768");       /* digital min */
+    eveField(hdr, 504U, 8U, "-32768");
+    eveField(hdr, 512U, 8U, "32767");        /* digital max */
+    eveField(hdr, 520U, 8U, "32767");
+    /* prefiltering 2x80 blank */
+    eveField(hdr, 688U, 8U, "31");           /* samples per record */
+    eveField(hdr, 696U, 8U, "1");
+    /* reserved 2x32 blank */
+
+    fr = f_write(&s_eve_fil, hdr, sizeof(hdr), &bw);
+    if ((fr != FR_OK) || (bw != sizeof(hdr)))
+    {
+        eveSetErr(2U, fr);
+        (void)f_close(&s_eve_fil);
+        return;
+    }
+    s_eve_open = 1U;
+    eveBuildRecord(rec, 0U, 0U, "Recording starts");
+    if (!eveAppend(rec) || !eveWriteCount() || (f_sync(&s_eve_fil) != FR_OK))
+    {
+        (void)f_close(&s_eve_fil);
+        s_eve_open = 0U;
+    }
+}
+
+/* Drain the RAM queue into records. Like PLD, errors are swallowed: a bad
+ * EVE file must never take down the BRP session. */
+static void eveService(void)
+{
+    uint8_t rec[EVE_REC_BYTES];
+    bool wrote = false;
+
+    while (s_eve_q_tail != s_eve_q_head)
+    {
+        const EveItem_t it = s_eve_q[s_eve_q_tail];
+        s_eve_q_tail = (uint8_t)((s_eve_q_tail + 1U) % EVE_Q_N);
+        if ((s_eve_open == 0U) || (it.type >= (uint8_t)SESSION_EVT_COUNT))
+        {
+            continue;
+        }
+        eveBuildRecord(rec, it.end_ticks / EDF_TICKS_PER_S,
+                       ((uint32_t)it.dur_ds + 5U) / 10U, k_eve_text[it.type]);
+        if (!eveAppend(rec))
+        {
+            (void)f_close(&s_eve_fil);
+            s_eve_open = 0U;
+            return;
+        }
+        wrote = true;
+    }
+    if (wrote && (!eveWriteCount() || (f_sync(&s_eve_fil) != FR_OK)))
+    {
+        (void)f_close(&s_eve_fil);
+        s_eve_open = 0U;
+    }
+}
+
+static void eveClose(void)
+{
+    if (s_eve_open != 0U)
+    {
+        eveService();
+    }
+    if (s_eve_open != 0U)
+    {
+        (void)f_close(&s_eve_fil);
+        s_eve_open = 0U;
+    }
+}
+
 static void setErr(uint32_t e)
 {
     g_session_edf_error = e;
@@ -191,6 +426,7 @@ void SessionEdf_Unmount(void)
     {
         (void)Edf_Close(&s_pld);
     }
+    eveClose();
     if (s_mounted != 0U)
     {
         (void)f_mount(NULL, "0:", 0);
@@ -385,6 +621,10 @@ static bool pickSessionPath(void)
                    "%s/20%02u%02u%02u_%02u%02u%02u_PLD.edf",
                    s_dir_path, (unsigned)s_yy, (unsigned)s_mo, (unsigned)s_dd,
                    (unsigned)s_hh, (unsigned)s_mi, (unsigned)ss);
+    (void)snprintf(s_eve_path, sizeof(s_eve_path),
+                   "%s/20%02u%02u%02u_%02u%02u%02u_EVE.edf",
+                   s_dir_path, (unsigned)s_yy, (unsigned)s_mo, (unsigned)s_dd,
+                   (unsigned)s_hh, (unsigned)s_mi, (unsigned)ss);
     s_file_seq++;
     return true;
 }
@@ -461,6 +701,11 @@ static bool openSessionFile(void)
         }
     }
 
+    /* EVE (#59), best-effort like PLD. */
+    s_eve_q_tail = s_eve_q_head;
+    s_ticks = 0U;
+    eveOpen(patient, recording);
+
     g_session_edf_state = (uint8_t)SESSION_EDF_LOGGING;
     g_session_edf_error = 0U;
     g_session_edf_fsize = (uint32_t)f_size(&s_edf.fil);
@@ -492,6 +737,8 @@ static void pushSample(float flow, float press, float leak, float target)
     /* BRP carries the waveforms; flow converted L/min -> L/s to match the
      * Flow.40ms channel's declared unit. */
     const float vals[EDF_NSIG] = { flow / 60.0f, press };
+
+    s_ticks++;                               /* EVE session clock (#59) */
 
     /* Full queue checked when committing a 1 s record (see below). */
 
@@ -645,6 +892,7 @@ void SessionEdf_Service(void)
             {
                 (void)Edf_Close(&s_pld);
             }
+            eveClose();
             {
                 FRESULT cr = Edf_Close(&s_edf);
                 g_session_edf_records = s_edf.n_records;
@@ -756,6 +1004,7 @@ void SessionEdf_Service(void)
                     setErr(0x3000U);
                     (void)Edf_Close(&s_edf);
                     if (s_pld.open) { (void)Edf_Close(&s_pld); }
+                    eveClose();
                     s_collecting = 0U;
                     s_write_n = 0U;
                     s_write_fail_streak = 0U;
@@ -770,6 +1019,7 @@ void SessionEdf_Service(void)
                 s_write_n = 0U;
                 s_write_fail_streak = 0U;
                 servicePld();
+                eveService();
             }
         }
     }
@@ -819,6 +1069,58 @@ uint32_t SessionEdf_GetPldError(void)
 const char* SessionEdf_GetPldPath(void)
 {
     return s_pld_path;
+}
+
+bool SessionEdf_IsLogging(void)
+{
+    return (s_collecting != 0U) && (g_session_edf_enable != 0U);
+}
+
+uint32_t SessionEdf_NowTicks(void)
+{
+    return s_ticks;
+}
+
+void SessionEdf_LogEvent(SessionEdfEvent_t type, uint32_t end_ticks, float dur_s)
+{
+    if (!SessionEdf_IsLogging() || ((uint32_t)type >= (uint32_t)SESSION_EVT_COUNT))
+    {
+        g_session_edf_eve_dropped++;
+        return;
+    }
+    float ds = dur_s * 10.0f;
+    if (!(ds > 0.0f)) { ds = 0.0f; }
+    if (ds > 65000.0f) { ds = 65000.0f; }
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const uint8_t next = (uint8_t)((s_eve_q_head + 1U) % EVE_Q_N);
+    if (next == s_eve_q_tail)
+    {
+        g_session_edf_eve_dropped++;
+    }
+    else
+    {
+        s_eve_q[s_eve_q_head].type = (uint8_t)type;
+        s_eve_q[s_eve_q_head].end_ticks = end_ticks;
+        s_eve_q[s_eve_q_head].dur_ds = (uint16_t)(ds + 0.5f);
+        s_eve_q_head = next;
+    }
+    __set_PRIMASK(primask);
+}
+
+uint32_t SessionEdf_GetEveRecords(void)
+{
+    return g_session_edf_eve_records;
+}
+
+uint32_t SessionEdf_GetEveError(void)
+{
+    return g_session_edf_eve_error;
+}
+
+const char* SessionEdf_GetEvePath(void)
+{
+    return s_eve_path;
 }
 
 uint32_t SessionEdf_GetFileSize(void)
