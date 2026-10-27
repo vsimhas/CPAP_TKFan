@@ -58,7 +58,10 @@ typedef enum
     THERAPY_STATE_RAMP,        /* blower on, PID on, setpoint ramping       */
     THERAPY_STATE_RUNNING,     /* at target pressure, monitoring leak       */
     THERAPY_STATE_STOPPING,    /* user stopped, blower spinning down        */
-    THERAPY_STATE_FAULT        /* error: motor fault, persistent high leak  */
+    THERAPY_STATE_FAULT,       /* error: motor fault, persistent high leak  */
+    THERAPY_STATE_PRECHECK     /* #83: blower spin self-test before RAMP /
+                                * RUNNING (precheck.h); appended, so the
+                                * numbers above are unchanged              */
 } TherapyState_t;
 
 typedef enum

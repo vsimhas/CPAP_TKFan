@@ -455,6 +455,20 @@ static void Telem_PushPrecheck(void)
   {
     Telem_BufPush((const uint8_t *)line, (uint32_t)n);
   }
+  /* Last spin check (#83). */
+  const PrecheckSpin_t *sp = Precheck_GetLastSpin();
+  n = snprintf(line, sizeof(line),
+               "# SPIN en=%u map=%u fail=%s inj=%u n=%lu rpm=%.0f p=%.3f model=%.3f "
+               "q=%.2f p_sd=%.4f q_sd=%.3f\r\n",
+               (unsigned)g_precheck_spin_enable, (unsigned)g_precheck_spin_map_enable,
+               Precheck_FailName(sp->fail), sp->injected ? 1U : 0U,
+               (unsigned long)sp->n, (double)sp->rpm_mean, (double)sp->p_mean,
+               (double)sp->p_model, (double)sp->q_mean, (double)sp->p_std,
+               (double)sp->q_std);
+  if ((n > 0) && ((size_t)n < sizeof(line)))
+  {
+    Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+  }
 }
 
 static void Telem_PushStatus(void)
@@ -1873,10 +1887,27 @@ static void Telem_ProcessOneCommand(const char *cmd)
     if (f == PRECHECK_COUNT)
     {
       Telem_PushErr("precheck test none|ps_frozen|ps_range|ps_offset|fs_frozen|fs_bad|"
-                    "as_frozen|as_range|cm4_stale|cm4_fault|vbus");
+                    "as_frozen|as_range|cm4_stale|cm4_fault|vbus|spin_speed|"
+                    "spin_map|spin_flat|spin_noisy");
       return;
     }
     Precheck_Inject(f);
+    Telem_PushAck(cmd);
+    return;
+  }
+
+  if ((strncmp(cmd, "therapy precheck spin ", 22U) == 0)
+      || (strncmp(cmd, "therapy precheck map ", 21U) == 0))
+  {
+    const bool spin = (cmd[17] == 's');
+    long v = 0;
+    if (!Telem_ParseLong(&cmd[spin ? 22 : 21], &v) || ((v != 0) && (v != 1)))
+    {
+      Telem_PushErr("therapy precheck spin|map 0|1");
+      return;
+    }
+    if (spin) { g_precheck_spin_enable = (uint8_t)v; }
+    else      { g_precheck_spin_map_enable = (uint8_t)v; }
     Telem_PushAck(cmd);
     return;
   }

@@ -396,6 +396,14 @@ volatile uint32_t g_therapy_session_p_samples = 0U;
 volatile uint32_t g_therapy_ramp_elapsed_ms = 0U;
 static uint32_t   s_autoramp_rise_from_ms = 0U;   /* ramp_elapsed at onset */
 static float      s_ramp_start_cmh2o = THERAPY_RAMP_START_CMH2O;
+static uint32_t   s_spin_ms = 0U;      /* #83: time in THERAPY_STATE_PRECHECK */
+static uint32_t   s_spin_wait_ms = 0U; /* of which waiting on a CM4 hold-off */
+static uint32_t   s_spin_at_ms = 0U;   /* time held at the spin speed */
+/* #83: a session was actually started (therapyArm ran). A start the
+ * self-test refused has none - its Stop must not close one (it wrote an
+ * empty SUMMARY.CSV record). */
+static bool       s_session_armed = false;
+static void       therapyArm(void);
 volatile uint32_t g_therapy_stop_elapsed_ms = 0U;
 
 volatile uint8_t  g_therapy_fault          = (uint8_t)THERAPY_FAULT_NONE;
@@ -2305,6 +2313,7 @@ const char* Therapy_GetStateName(void)
     case THERAPY_STATE_RUNNING:   return "Running";
     case THERAPY_STATE_STOPPING:  return "Stopping";
     case THERAPY_STATE_FAULT:     return "Fault";
+    case THERAPY_STATE_PRECHECK:  return "Self-test";
     default:                      return "?";
     }
 }
@@ -2532,8 +2541,28 @@ void Therapy_Start(void)
             DBG_W("THR", "precheck warnings 0x%02X (analog/sd/clock/humid/tube)",
                   (unsigned)pc.warn);
         }
+        if (g_precheck_spin_enable != 0U)
+        {
+            /* Spin check: open-loop at a fixed speed; Therapy_Update judges
+             * it and calls therapyArm() on a pass. */
+            Precheck_SpinBegin();
+            s_spin_ms = 0U;
+            s_spin_wait_ms = 0U;
+            s_spin_at_ms = 0U;
+            (void)BlowerIpc_CM7_AcknowledgeFault();
+            BlowerCtrl_ManualStart(Precheck_SpinRpm(), Precheck_SpinRampMs());
+            setState(THERAPY_STATE_PRECHECK);
+            DBG_I("THR", "precheck: spin %ld rpm", (long)Precheck_SpinRpm());
+            return;
+        }
     }
+    therapyArm();
+}
 
+/* Everything Therapy_Start used to do once the checks have passed. */
+static void therapyArm(void)
+{
+    s_session_armed = true;
     /* Re-apply the safety RPM ceiling in case it was poked. */
     extern volatile int32_t g_blower_ctrl_rpm_max;
     g_blower_ctrl_rpm_max = g_safety_safe_rpm_max;
@@ -2669,6 +2698,22 @@ void Therapy_Stop(void)
     {
         return;
     }
+    if (!s_session_armed)
+    {
+        /* #83: the self-test was spinning or refused the start - there is
+         * no session to close. Stop the spin, acknowledge the fault. */
+        if (BlowerCtrl_IsManualActive())
+        {
+            BlowerCtrl_ManualStop();
+        }
+        if (g_therapy_state == (uint8_t)THERAPY_STATE_FAULT)
+        {
+            Therapy_ClearFault();
+        }
+        setState(THERAPY_STATE_IDLE);
+        return;
+    }
+    s_session_armed = false;
 
     Apap_OnTherapyStop();
     Leak_SetSessionActive(false);
@@ -2765,6 +2810,56 @@ void Therapy_Update(float dt_s)
     case THERAPY_STATE_IDLE:
     {
         /* Nothing to do; waiting for Therapy_Start(). */
+        break;
+    }
+
+    case THERAPY_STATE_PRECHECK:
+    {
+        /* #83 spin check. A CM4 restart hold-off (rotor still coasting from
+         * a stop) defers the start: do not count that time, up to 15 s. */
+        BlowerIpcStatus_t bst = { 0 };
+        if (BlowerIpc_CM7_GetStatus(&bst) && (bst.restart_holdoff_ms > 0U)
+            && (s_spin_wait_ms < 15000U))
+        {
+            s_spin_wait_ms += dt_ms;
+            break;
+        }
+        /* Sample once the rotor has held the spin speed for SampleFrom, and
+         * judge after SampleFrom..End of samples; a rotor that never gets
+         * there is judged (spin_speed) at the time-out. */
+        s_spin_ms += dt_ms;
+        const int32_t err = bst.mech_speed_rpm - Precheck_SpinRpm();
+        const bool at_speed = (err > -1500) && (err < 1500);
+        s_spin_at_ms = at_speed ? (s_spin_at_ms + dt_ms) : 0U;
+        if (s_spin_at_ms >= Precheck_SpinSampleFromMs())
+        {
+            Precheck_SpinSample();
+        }
+        if ((s_spin_at_ms < Precheck_SpinEndMs())
+            && (s_spin_ms < Precheck_SpinTimeoutMs()))
+        {
+            break;
+        }
+        PrecheckSpin_t sp;
+        if (Precheck_SpinVerdict(&sp))
+        {
+            DBG_I("THR", "precheck spin ok: %.0f rpm p=%.2f (map %.2f) q=%.1f sd %.3f/%.2f",
+                  (double)sp.rpm_mean, (double)sp.p_mean, (double)sp.p_model,
+                  (double)sp.q_mean, (double)sp.p_std, (double)sp.q_std);
+            /* Hand the spinning motor to the pressure loop - no STOP. */
+            BlowerCtrl_ClearManualFlag();
+            therapyArm();
+        }
+        else
+        {
+            char why[48];
+            (void)snprintf(why, sizeof(why), "%s%s %.0frpm p%.1f/%.1f q%.0f",
+                           Precheck_FailToken(sp.fail), sp.injected ? " test" : "",
+                           (double)sp.rpm_mean, (double)sp.p_mean,
+                           (double)sp.p_model, (double)sp.q_mean);
+            BlowerCtrl_ManualStop();
+            Therapy_LatchFault(THERAPY_FAULT_PRECHECK, why);
+        }
         break;
     }
 

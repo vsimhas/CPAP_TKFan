@@ -807,6 +807,11 @@ void screenView::renderTherapyPage()
                        static_cast<double>(meas),
                        static_cast<double>(target));
     }
+    else if (st == THERAPY_STATE_PRECHECK)
+    {
+        /* #83: blower spin self-test, ~3 s before the ramp / therapy. */
+        (void)snprintf(buf, sizeof(buf), "Self-test: checking blower...");
+    }
     else if (st == THERAPY_STATE_FAULT)
     {
         (void)snprintf(buf, sizeof(buf),

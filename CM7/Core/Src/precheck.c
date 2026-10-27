@@ -16,6 +16,8 @@
 #include <string.h>
 
 volatile uint8_t g_precheck_enable = 1U;
+volatile uint8_t g_precheck_spin_enable = 1U;
+volatile uint8_t g_precheck_spin_map_enable = 1U;
 
 #define PC_MBAR_PER_CMH2O     0.980665f
 #define PC_PS_FROZEN_MS       500U
@@ -31,6 +33,21 @@ volatile uint8_t g_precheck_enable = 1U;
 #define PC_VBUS_MIN_V         20.0f
 #define PC_VBUS_MAX_V         28.0f
 #define PC_REST_RPM           500
+#define PC_SPIN_RPM           12000     /* ~3 cmH2O on the WM6850 map */
+#define PC_SPIN_RAMP_MS       1000U
+#define PC_SPIN_SAMPLE_MS     500U      /* at speed this long, then sample */
+#define PC_SPIN_END_MS        1500U     /* ... until this long at speed    */
+#define PC_SPIN_TIMEOUT_MS    6000U     /* never got there: spin_speed     */
+#define PC_SPIN_SPEED_TOL     1500.0f
+/* Map rms 0.38 cmH2O. Bench 2026-10-27 at 12 krpm: healthy +0.51 / +0.26
+ * cmH2O off the map; 1.0 + 25 % let a 57 % fan_a error (1.78 off) pass,
+ * 0.8 + 15 % (1.16 here) catches it and a ~30 % pressure gain error. */
+#define PC_SPIN_MAP_ABS       0.8f
+#define PC_SPIN_MAP_REL       0.15f
+#define PC_SPIN_P_STD_MIN     0.002f    /* cmH2O: a live sensor never sits flat */
+#define PC_SPIN_Q_STD_MIN     0.02f     /* L/min */
+#define PC_SPIN_P_STD_MAX     3.0f
+#define PC_SPIN_Q_STD_MAX     60.0f
 
 /* main.c */
 extern AMS5935_HandleTypeDef hamsFS;
@@ -41,6 +58,11 @@ extern BlowerIpcStatus_t     g_blower_status;
 extern SensirionTH_Handle_t  hSht4x;
 extern SensirionTH_Handle_t  hSts4x;
 extern volatile uint8_t      sd_card_present;
+/* flow_sensor.c fan map (cmH2O; krpm; L/min). */
+extern volatile float        g_flow_fan_a;
+extern volatile float        g_flow_fan_b;
+extern volatile float        g_flow_fan_c;
+extern volatile float        g_flow_fan_d;
 
 typedef struct
 {
@@ -55,6 +77,14 @@ static Watch_t s_as;
 static Watch_t s_cm4;
 static PrecheckFail_t s_inject = PRECHECK_OK;
 static PrecheckFail_t s_last_fail = PRECHECK_OK;
+/* Spin accumulators. */
+static uint32_t s_sp_n;
+static double   s_sp_rpm;
+static double   s_sp_p;
+static double   s_sp_p2;
+static double   s_sp_q;
+static double   s_sp_q2;
+static PrecheckSpin_t s_last_spin;
 
 static const char * const k_name[PRECHECK_COUNT] = {
     "OK",
@@ -68,11 +98,16 @@ static const char * const k_name[PRECHECK_COUNT] = {
     "motor drive not responding",
     "motor drive fault",
     "motor supply voltage",
+    "blower did not reach speed",
+    "pressure / flow off the blower curve",
+    "sensor flat while the blower runs",
+    "sensor noise while the blower runs",
 };
 
 static const char * const k_token[PRECHECK_COUNT] = {
     "none", "ps_frozen", "ps_range", "ps_offset", "fs_frozen", "fs_bad",
     "as_frozen", "as_range", "cm4_stale", "cm4_fault", "vbus",
+    "spin_speed", "spin_map", "spin_flat", "spin_noisy",
 };
 
 static void watch(Watch_t *w, uint32_t value, uint32_t dt_ms)
@@ -165,7 +200,8 @@ bool Precheck_Run(PrecheckResult_t *out)
         r.fail = PRECHECK_VBUS;
     }
 
-    if ((r.fail == PRECHECK_OK) && (s_inject != PRECHECK_OK))
+    if ((r.fail == PRECHECK_OK) && (s_inject != PRECHECK_OK)
+        && (s_inject < PRECHECK_SPIN_SPEED))      /* spin ones: at the verdict */
     {
         r.fail = s_inject;
         r.injected = true;
@@ -188,6 +224,100 @@ bool Precheck_Run(PrecheckResult_t *out)
         *out = r;
     }
     return (r.fail == PRECHECK_OK);
+}
+
+int32_t  Precheck_SpinRpm(void)          { return PC_SPIN_RPM; }
+uint16_t Precheck_SpinRampMs(void)       { return (uint16_t)PC_SPIN_RAMP_MS; }
+uint32_t Precheck_SpinSampleFromMs(void) { return PC_SPIN_SAMPLE_MS; }
+uint32_t Precheck_SpinEndMs(void)        { return PC_SPIN_END_MS; }
+uint32_t Precheck_SpinTimeoutMs(void)    { return PC_SPIN_TIMEOUT_MS; }
+
+void Precheck_SpinBegin(void)
+{
+    s_sp_n = 0U;
+    s_sp_rpm = 0.0;
+    s_sp_p = 0.0;
+    s_sp_p2 = 0.0;
+    s_sp_q = 0.0;
+    s_sp_q2 = 0.0;
+}
+
+void Precheck_SpinSample(void)
+{
+    const double p = (double)(measPS.pressure / PC_MBAR_PER_CMH2O);
+    const double q = (double)Flow_GetSlm();
+    s_sp_rpm += (double)g_blower_status.mech_speed_rpm;
+    s_sp_p += p;
+    s_sp_p2 += p * p;
+    s_sp_q += q;
+    s_sp_q2 += q * q;
+    s_sp_n++;
+}
+
+static float stdOf(double sum, double sum2, uint32_t n)
+{
+    const double m = sum / (double)n;
+    const double v = (sum2 / (double)n) - (m * m);
+    return (v > 0.0) ? (float)sqrt(v) : 0.0f;
+}
+
+bool Precheck_SpinVerdict(PrecheckSpin_t *out)
+{
+    PrecheckSpin_t r;
+    memset(&r, 0, sizeof(r));
+    r.n = s_sp_n;
+    if (s_sp_n == 0U)
+    {
+        r.fail = PRECHECK_SPIN_SPEED;
+    }
+    else
+    {
+        r.rpm_mean = (float)(s_sp_rpm / (double)s_sp_n);
+        r.p_mean = (float)(s_sp_p / (double)s_sp_n);
+        r.q_mean = (float)(s_sp_q / (double)s_sp_n);
+        r.p_std = stdOf(s_sp_p, s_sp_p2, s_sp_n);
+        r.q_std = stdOf(s_sp_q, s_sp_q2, s_sp_n);
+        const float n_k = r.rpm_mean * 0.001f;
+        const float q = r.q_mean;
+        r.p_model = (g_flow_fan_a * n_k * n_k) + (g_flow_fan_b * n_k * q)
+                  + (g_flow_fan_c * q * fabsf(q)) + (g_flow_fan_d * q);
+
+        if (fabsf(r.rpm_mean - (float)PC_SPIN_RPM) > PC_SPIN_SPEED_TOL)
+        {
+            r.fail = PRECHECK_SPIN_SPEED;
+        }
+        else if ((g_precheck_spin_map_enable != 0U)
+                 && (fabsf(r.p_mean - r.p_model)
+                     > (PC_SPIN_MAP_ABS + (PC_SPIN_MAP_REL * fabsf(r.p_model)))))
+        {
+            r.fail = PRECHECK_SPIN_MAP;
+        }
+        else if ((r.p_std < PC_SPIN_P_STD_MIN) || (r.q_std < PC_SPIN_Q_STD_MIN))
+        {
+            r.fail = PRECHECK_SPIN_FLAT;
+        }
+        else if ((r.p_std > PC_SPIN_P_STD_MAX) || (r.q_std > PC_SPIN_Q_STD_MAX))
+        {
+            r.fail = PRECHECK_SPIN_NOISY;
+        }
+    }
+    if ((r.fail == PRECHECK_OK) && (s_inject >= PRECHECK_SPIN_SPEED))
+    {
+        r.fail = s_inject;
+        r.injected = true;
+    }
+    s_last_spin = r;
+    s_last_fail = r.fail;
+    if (out != NULL)
+    {
+        *out = r;
+    }
+    return (r.fail == PRECHECK_OK);
+}
+
+const PrecheckSpin_t* Precheck_GetLastSpin(void)
+{
+    return &s_last_spin;
 }
 
 const char* Precheck_FailName(PrecheckFail_t f)

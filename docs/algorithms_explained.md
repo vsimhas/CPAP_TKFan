@@ -560,8 +560,18 @@ IDLE -> RAMP -> RUNNING -> STOPPING -> IDLE
   fault active, or the motor supply outside 20..28 V. Warnings (start
   allowed): the analog pressure sensor more than 2 cmH₂O from the mask sensor,
   no SD card, clock not set, humidity / tube-temperature sensor not reading.
-  `therapy precheck` prints the check and its readings; `therapy precheck test
-  <what>` forces a failure for testing.
+  Then a **spin check** (state PRECHECK, ~2-3 s): the blower runs open-loop at
+  12000 rpm (about 3 cmH₂O); once it has held that speed for 0.5 s, device
+  pressure, flow and speed are sampled for 1 s. The speed must be within
+  1500 rpm, the pressure must sit on the fan map for that speed and flow
+  (P = a N² + b N Q + c Q|Q| + d Q, within 0.8 cmH₂O + 15 %) - the pressure
+  and flow sensors and the rotor speed have to agree, whatever the mask or leak
+  load - and neither sensor may be flat or wildly noisy. A pass hands the
+  spinning motor to the pressure loop without a stop; a failure latches the
+  self-test fault. `therapy precheck spin 0` / `map 0` switch the spin check /
+  its map comparison off (the map is the WM6850's).
+  `therapy precheck` prints the check, its readings and the last spin;
+  `therapy precheck test <what>` forces a failure for testing.
 - **STOPPING**: a two-second spin-down.
 - **FAULT**: blower disabled and stopped. There is no automatic recovery.
 

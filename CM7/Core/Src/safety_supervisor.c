@@ -108,7 +108,8 @@ static bool therapyNeedsCm4Heartbeat(void)
     const TherapyState_t st = Therapy_GetState();
     return (st == THERAPY_STATE_RAMP)
         || (st == THERAPY_STATE_RUNNING)
-        || (st == THERAPY_STATE_STOPPING);
+        || (st == THERAPY_STATE_STOPPING)
+        || (st == THERAPY_STATE_PRECHECK);   /* #83 spin check */
 }
 
 static void updateCm4Heartbeat(uint32_t dt_ms)

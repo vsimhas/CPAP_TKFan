@@ -29,6 +29,21 @@
   *  conversion, and a dead SPI link, a sensor that stopped converting or a
   *  stuck one all look the same.
   *
+  *  Spin check (after the above passes, unless g_precheck_spin_enable is 0):
+  *  therapy enters THERAPY_STATE_PRECHECK and runs the blower open-loop at
+  *  12000 rpm (about 3 cmH2O - below any ramp start). Once the rotor has held
+  *  that speed (+-1500 rpm) for 0.5 s, device pressure, flow and speed are
+  *  sampled for 1 s; a rotor not there within 6 s fails spin_speed. HARD:
+  *    spin_speed  mean speed more than 1500 rpm off the command
+  *    spin_map    device pressure off the fan map for that speed and flow
+  *                (P = a N^2 + b N Q + c Q|Q| + d Q, flow_sensor.c) by more
+  *                than 0.8 cmH2O + 15 % - pressure, flow and speed have to
+  *                agree, whatever the mask / leak load (g_precheck_spin_map_
+  *                enable 0 skips it, e.g. a blower whose map is not fitted)
+  *    spin_flat   pressure or flow showing no variation while the blower runs
+  *    spin_noisy  pressure std > 3 cmH2O or flow std > 60 L/min
+  *  A pass hands the spinning motor to the pressure controller without a stop.
+  *
   *  `therapy precheck` runs it and prints the result without starting;
   *  `therapy precheck test <what>` makes the next runs fail that check, to
   *  prove the refusal path (`therapy precheck test none` clears it).
@@ -57,6 +72,10 @@ typedef enum
     PRECHECK_CM4_STALE,
     PRECHECK_CM4_FAULT,
     PRECHECK_VBUS,
+    PRECHECK_SPIN_SPEED,          /* spin check (THERAPY_STATE_PRECHECK) */
+    PRECHECK_SPIN_MAP,
+    PRECHECK_SPIN_FLAT,
+    PRECHECK_SPIN_NOISY,
     PRECHECK_COUNT
 } PrecheckFail_t;
 
@@ -86,6 +105,32 @@ typedef struct
 } PrecheckResult_t;
 
 extern volatile uint8_t g_precheck_enable;   /* 1 = run at Therapy_Start */
+extern volatile uint8_t g_precheck_spin_enable;      /* 1 = blower spin check */
+extern volatile uint8_t g_precheck_spin_map_enable;  /* 1 = fan-map comparison */
+
+typedef struct
+{
+    PrecheckFail_t fail;
+    bool           injected;
+    uint32_t       n;             /* samples */
+    float          rpm_mean;
+    float          p_mean;        /* device pressure, cmH2O */
+    float          p_model;       /* fan map at rpm_mean, q_mean */
+    float          q_mean;        /* L/min */
+    float          p_std;
+    float          q_std;
+} PrecheckSpin_t;
+
+/* Spin check, driven by therapy.c: command, settle / sample window, verdict. */
+int32_t     Precheck_SpinRpm(void);
+uint16_t    Precheck_SpinRampMs(void);
+uint32_t    Precheck_SpinSampleFromMs(void);
+uint32_t    Precheck_SpinEndMs(void);
+uint32_t    Precheck_SpinTimeoutMs(void);
+void        Precheck_SpinBegin(void);
+void        Precheck_SpinSample(void);          /* every therapy tick in window */
+bool        Precheck_SpinVerdict(PrecheckSpin_t *out);
+const PrecheckSpin_t* Precheck_GetLastSpin(void);
 
 /* SensorTask, every loop after the sensors are harvested. */
 void        Precheck_SensorTick(uint32_t dt_ms);
