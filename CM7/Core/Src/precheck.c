@@ -17,7 +17,10 @@
 
 volatile uint8_t g_precheck_enable = 1U;
 volatile uint8_t g_precheck_spin_enable = 1U;
-volatile uint8_t g_precheck_spin_map_enable = 1U;
+/* TKFan: off - g_flow_fan_a..d are still the WM6850's fit (flow_sensor.c),
+ * so the map would refuse a healthy BA7060H24B. Refit the map for this
+ * blower, then set it back to 1 (`therapy precheck map 1` to try it). */
+volatile uint8_t g_precheck_spin_map_enable = 0U;
 
 #define PC_MBAR_PER_CMH2O     0.980665f
 #define PC_PS_FROZEN_MS       500U
