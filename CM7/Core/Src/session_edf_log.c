@@ -481,7 +481,10 @@ void SessionEdf_Unmount(void)
 
 void SessionEdf_Init(void)
 {
-    g_session_edf_enable = 0U;
+    /* On from boot: a session after a power cycle used to get no waveform
+     * files until `therapy edf enable 1` was sent again. All FatFs work is
+     * in SelfTestTask, so it cannot stall USB or the sensor loop. */
+    g_session_edf_enable = 1U;
     g_session_edf_state = (uint8_t)SESSION_EDF_IDLE;
     g_session_edf_records = 0U;
     g_session_edf_error = 0U;

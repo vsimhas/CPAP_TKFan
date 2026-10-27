@@ -28,7 +28,7 @@
 #include <stdint.h>
 
 /* === Compile-time defaults === */
-#define THERAPY_RAMP_START_CMH2O    4.0f         /* AirSense-style start    */
+#define THERAPY_RAMP_START_CMH2O    4.0f         /* default ramp start      */
 #define THERAPY_TARGET_DEFAULT      8.0f         /* sensible adult default  */
 #define THERAPY_PRESS_MIN_CMH2O     4.0f
 #define THERAPY_PRESS_MAX_CMH2O     25.0f
@@ -46,6 +46,9 @@ volatile uint8_t  g_therapy_ramp_minutes   = 0U;
  * then rise at autoramp_rate; the target is reached by autoramp_max_min after
  * start whatever happens (ResMed: "no later than 30 minutes"). */
 volatile uint8_t  g_therapy_ramp_auto              = 0U;
+/* #5: ramp start pressure (AirSense "Start Pressure"), 4 cmH2O up to the
+ * session target; snapshotted at Therapy_Start. */
+volatile float    g_therapy_ramp_start_cmh2o       = THERAPY_RAMP_START_CMH2O;
 volatile float    g_therapy_autoramp_rate_cmh2o_min = 1.0f;
 volatile uint8_t  g_therapy_autoramp_max_min       = 30U;
 volatile uint8_t  g_therapy_autoramp_phase         = 0U;   /* 0 hold, 1 rising */
@@ -390,6 +393,7 @@ volatile float  g_therapy_session_p95   = 0.0f;
 volatile uint32_t g_therapy_session_p_samples = 0U;
 volatile uint32_t g_therapy_ramp_elapsed_ms = 0U;
 static uint32_t   s_autoramp_rise_from_ms = 0U;   /* ramp_elapsed at onset */
+static float      s_ramp_start_cmh2o = THERAPY_RAMP_START_CMH2O;
 volatile uint32_t g_therapy_stop_elapsed_ms = 0U;
 
 volatile uint8_t  g_therapy_fault          = (uint8_t)THERAPY_FAULT_NONE;
@@ -1402,10 +1406,10 @@ static float autoRampSetpointCmh2o(void)
 {
     if (g_therapy_autoramp_phase == 0U)
     {
-        return THERAPY_RAMP_START_CMH2O;
+        return s_ramp_start_cmh2o;
     }
     const float rate = clampf(g_therapy_autoramp_rate_cmh2o_min, 0.2f, 10.0f);
-    const float sp = THERAPY_RAMP_START_CMH2O
+    const float sp = s_ramp_start_cmh2o
                    + (rate * (float)(g_therapy_ramp_elapsed_ms - s_autoramp_rise_from_ms)
                       / 60000.0f);
     return (sp < s_session_target_cmh2o) ? sp : s_session_target_cmh2o;
@@ -1420,7 +1424,7 @@ static void autoRampStep(void)
         return;
     }
     const float rate = clampf(g_therapy_autoramp_rate_cmh2o_min, 0.2f, 10.0f);
-    const float rise_ms = (s_session_target_cmh2o - THERAPY_RAMP_START_CMH2O)
+    const float rise_ms = (s_session_target_cmh2o - s_ramp_start_cmh2o)
                         / rate * 60000.0f;
     const uint32_t last_hold_ms = ((float)g_therapy_ramp_total_ms > rise_ms)
                                 ? (g_therapy_ramp_total_ms - (uint32_t)rise_ms) : 0U;
@@ -1453,8 +1457,8 @@ static float currentRampSetpointCmh2o(void)
     }
     const float frac = (float)g_therapy_ramp_elapsed_ms
                      / (float)g_therapy_ramp_total_ms;
-    return THERAPY_RAMP_START_CMH2O
-         + frac * (s_session_target_cmh2o - THERAPY_RAMP_START_CMH2O);
+    return s_ramp_start_cmh2o
+         + frac * (s_session_target_cmh2o - s_ramp_start_cmh2o);
 }
 
 static float therapyBaseSetpointCmh2o(void)
@@ -2206,6 +2210,13 @@ void Therapy_SetRampMinutes(uint8_t minutes)
 uint8_t Therapy_GetRampMinutes(void) { return g_therapy_ramp_minutes; }
 
 void Therapy_SetRampAuto(bool en)    { g_therapy_ramp_auto = en ? 1U : 0U; }
+
+void Therapy_SetRampStartPressure(float cmh2o)
+{
+    g_therapy_ramp_start_cmh2o = clampf(cmh2o, THERAPY_PRESS_MIN_CMH2O,
+                                        THERAPY_PRESS_MAX_CMH2O);
+}
+float Therapy_GetRampStartPressure(void) { return g_therapy_ramp_start_cmh2o; }
 bool Therapy_GetRampAuto(void)       { return (g_therapy_ramp_auto != 0U); }
 uint8_t Therapy_GetAutoRampPhase(void) { return g_therapy_autoramp_phase; }
 uint8_t Therapy_GetAutoRampCause(void) { return g_therapy_autoramp_cause; }
@@ -2511,11 +2522,13 @@ void Therapy_Start(void)
                             g_therapy_mode);
     }
     g_therapy_ramp_total_ms  = (uint32_t)g_therapy_ramp_minutes * 60U * 1000U;
+    s_ramp_start_cmh2o = clampf(g_therapy_ramp_start_cmh2o, THERAPY_PRESS_MIN_CMH2O,
+                                s_session_target_cmh2o);           /* #5 */
     g_therapy_autoramp_phase = 0U;
     g_therapy_autoramp_cause = 0U;
     g_therapy_autoramp_onset_s = 0U;
     s_autoramp_rise_from_ms = 0U;
-    if ((g_therapy_ramp_auto != 0U) && (s_session_target_cmh2o > THERAPY_RAMP_START_CMH2O))
+    if ((g_therapy_ramp_auto != 0U) && (s_session_target_cmh2o > s_ramp_start_cmh2o))
     {
         /* #38: ramp_total is the latest the target may be reached. */
         g_therapy_ramp_total_ms = (uint32_t)clampf((float)g_therapy_autoramp_max_min,
@@ -2584,7 +2597,7 @@ void Therapy_Start(void)
     }
 
     const float start_sp = (g_therapy_ramp_total_ms > 0U)
-                              ? THERAPY_RAMP_START_CMH2O
+                              ? s_ramp_start_cmh2o
                               : s_session_target_cmh2o;
     if (Epr_IsEnabled())
     {
@@ -2729,7 +2742,7 @@ void Therapy_Update(float dt_s)
         }
         maskOffResumeBoost(dt_s, dt_ms);
 
-        /* Linear ramp from THERAPY_RAMP_START_CMH2O to session target
+        /* Linear ramp from s_ramp_start_cmh2o to session target
          * over ramp_total_ms. The PID's internal slew limiter (15
          * cmH2O/s) is far faster than this slow ramp (~0.01 cmH2O/s
          * typical) so the per-tick step is, for all practical purposes,
@@ -2764,9 +2777,9 @@ void Therapy_Update(float dt_s)
         {
             const float frac = (float)g_therapy_ramp_elapsed_ms
                              / (float)g_therapy_ramp_total_ms;
-            const float sp   = THERAPY_RAMP_START_CMH2O
+            const float sp   = s_ramp_start_cmh2o
                              + frac * (s_session_target_cmh2o
-                                       - THERAPY_RAMP_START_CMH2O);
+                                       - s_ramp_start_cmh2o);
             applyTherapySetpoint(sp, dt_s);
         }
         sessionPressureSample(g_therapy_measured_cmh2o);

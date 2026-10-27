@@ -533,8 +533,11 @@ IDLE -> RAMP -> RUNNING -> STOPPING -> IDLE
 - **RAMP** (optional, 0–45 minutes): start at 4 cmH₂O and climb linearly to the
   session target, so the patient can fall asleep at a low pressure. The climb
   is so slow (~0.01 cmH₂O/s) that the PID's own slew limiter never notices it.
+  The start pressure is a setting (#5, GUI "Ramp Start", `therapy set
+  ramp_start`): 4 cmH₂O by default, up to the CPAP pressure or the AutoSet
+  minimum.
   **AutoRamp** (#38, `therapy set ramp auto`, GUI ramp "Auto") instead holds
-  4 cmH₂O until sleep onset and then climbs at 1 cmH₂O/min
+  the start pressure until sleep onset and then climbs at 1 cmH₂O/min
   (`apap set autoramp_rate`). Onset is ResMed's three signs: 30 stable breaths
   in a row (period within ±20 % and peak within ±25 % of their running
   averages), 3 obstructive apneas or hypopneas within 2 min, or 5 snore breaths
@@ -648,7 +651,13 @@ The loop:
    open and the patient simply is not breathing — a central apnoea, and raising
    pressure would not help, so it does not.
 5. **High leak blocks every pressure rise.** If the circuit is leaking, the
-   event detectors cannot be trusted.
+   event detectors cannot be trusted. Once the leak has been HIGH for 3 s it
+   also stops scoring (#19): no events are counted or annotated, FL / snore
+   time and the PLD indices stop, the CSR detector closes its span, and the
+   time is left out of the AHI denominator. Scoring resumes 10 s after the
+   leak drops (the flow estimate needs a few breaths). The excluded time and
+   the number of periods go to SUMMARY.CSV (`leak_excl_s`, `leak_excl_n`), so
+   the exclusion is visible rather than silent.
 6. After a quiet, stable period, drift the pressure slowly back down.
 
 A "Soft" response setting makes all the rises gentler.

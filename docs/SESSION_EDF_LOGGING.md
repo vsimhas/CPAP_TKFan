@@ -105,21 +105,23 @@ schema version: columns are only ever added at the end, with the version bumped.
 | `p_avg` ... `p95` | mask pressure avg / min / max / P50 / P90 / P95 (mask-off excluded) |
 | `leak_avg`, `leak_p50`, `leak_p95`, `leak_max`, `leak_high_s`, `leak_low_s` | unintentional leak (L/min) and seconds above the high / below the low threshold |
 | `events_scored`, `oa`, `ca`, `hyp`, `fl`, `snore` | scored events; scored in AutoSet and in CPAP mode (#33: detectors on, no titration); `events_scored` 0 only with `apap set cpap_scoring 0` |
-| `ahi`, `rdi`, `si` | per hour of **mask-on** time |
+| `ahi`, `rdi`, `si` | per hour of **mask-on** time, less `leak_excl_s` (#19) |
 | `edf` | the session's DATALOG name, e.g. `20261026_140818` |
 | `fl_idx_avg`, `fl_idx_p95` | flow-limitation index (`FlowLim.2s` scale), mean and P95 over the session's breaths (schema 2) |
 | `fl_s`, `snore_s` | seconds with the FL flag / snore detector on (schema 2) |
 | `csr_s`, `csr_n` | periodic breathing: seconds in logged spans and their number (schema 3, #32) |
+| `leak_excl_s`, `leak_excl_n` | large-leak exclusion (#19): seconds and number of periods in which no events were scored (schema 4) |
 | `ramp_auto`, `onset_s`, `onset_cause` | AutoRamp (#38): 1 if used, seconds from start to sleep onset, and why - 1 stable breathing, 2 apneas / hypopneas, 3 snore, 4 time limit (schema 3) |
 
-Schema 2 (#60 / #61) added `fl_idx_avg` .. `snore_s`, schema 3 (#32 / #38) the last
-five. When a card already holds an older file, a `# schema N` comment and the new
+Schema 2 (#60 / #61) added `fl_idx_avg` .. `snore_s`, schema 3 (#32 / #38)
+`csr_s` .. `onset_cause`, schema 4 (#19) `leak_excl_s` / `leak_excl_n`. When a card already holds an older file, a `# schema N` comment and the new
 header line are appended before the next record. Readers (`adherence.c`, `adherence_check.py`) re-map the columns at every
 header line.
 
 The record is snapshotted in RAM at stop and written to the card. The card is mounted
 whenever one is in and has passed its self-test, **whether or not EDF logging is
-enabled** - `therapy edf enable` only switches the BRP/PLD/EVE waveform files. Pulling
+enabled** - `therapy edf enable` only switches the BRP/PLD/EVE/CSL waveform files
+(on from boot; `therapy edf enable 0` switches them off until the next boot). Pulling
 the card unmounts it (open files are dropped without touching the missing card); a
 failed mount is retried on the next insertion or `therapy edf enable 1`. `therapy summary` prints the last record over USB (`# SUMR`) with
 its column header (`# SUMH`), and `pending/written/err` for the card write.
@@ -196,9 +198,10 @@ target pressure, and EVE the event flags (OA / CA / H) on the flow graph.
    about +-5 %: reset the clock now and then), `valid=1` once the time has
    been set since the backup domain was last lost (until then the clock
    counts from 2026-01-01), and `now=`.
-4. Enable logging (off by default so USB telemetry is never blocked by FatFs):
+4. Logging is on from boot (all FatFs work runs in SelfTestTask, so USB telemetry is
+   never blocked). To switch the waveform files off until the next boot:
    ```
-   therapy edf enable 1
+   therapy edf enable 0
    ```
 5. `therapy start` … `therapy stop`
 6. Check status:

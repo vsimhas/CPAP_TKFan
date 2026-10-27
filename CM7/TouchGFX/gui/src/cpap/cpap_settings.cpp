@@ -26,7 +26,8 @@ Settings g_settings = {
     /* apap_max_pressure_half */ APAP_PRESSURE_HALF_MAX_DEF, /* 20.0 cmH2O */
     /* epr_allowed         */ true,
     /* smart_start_allowed */ true,
-    /* smart_stop_allowed  */ true
+    /* smart_stop_allowed  */ true,
+    /* ramp_start_half     */ 8U                         /* 4.0 cmH2O (#5) */
 };
 
 /* Defaults: nothing connected, no humidifier activity. Back-end code
@@ -175,6 +176,17 @@ uint8_t stepCpapPressureHalf(uint8_t v, int delta)
     int x = static_cast<int>(v) + delta;
     if (x < static_cast<int>(CPAP_PRESSURE_HALF_MIN)) x = CPAP_PRESSURE_HALF_MIN;
     if (x > static_cast<int>(CPAP_PRESSURE_HALF_MAX)) x = CPAP_PRESSURE_HALF_MAX;
+    return static_cast<uint8_t>(x);
+}
+
+uint8_t stepRampStartHalf(uint8_t v, uint8_t ceiling_half, int delta)
+{
+    int x = static_cast<int>(v) + delta;
+    const int lo = static_cast<int>(CPAP_PRESSURE_HALF_MIN);
+    int hi = static_cast<int>(ceiling_half);
+    if (hi < lo) hi = lo;
+    if (x < lo) x = lo;
+    if (x > hi) x = hi;
     return static_cast<uint8_t>(x);
 }
 

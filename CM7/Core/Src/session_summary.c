@@ -28,7 +28,8 @@ static const char k_header[] =
     "leak_avg,leak_p50,leak_p95,leak_max,leak_high_s,leak_low_s,"
     "events_scored,oa,ca,hyp,fl,snore,ahi,rdi,si,edf,"
     "fl_idx_avg,fl_idx_p95,fl_s,snore_s,"
-    "csr_s,csr_n,ramp_auto,onset_s,onset_cause";
+    "csr_s,csr_n,ramp_auto,onset_s,onset_cause,"
+    "leak_excl_s,leak_excl_n";
 
 static RtcDateTime_t s_start;
 static bool          s_start_valid = false;
@@ -124,8 +125,10 @@ void SessionSummary_OnTherapyStop(void)
     const uint32_t hyp = scored ? Apap_GetEventHypCount() : 0U;
     const uint32_t fl = scored ? Apap_GetEventFlCount() : 0U;
     const uint32_t sn = scored ? Apap_GetEventSnoreCount() : 0U;
-    /* Indices per hour of mask-on time, as ResMed reports them. */
-    const float h = (float)on_s / 3600.0f;
+    /* Indices per hour of mask-on time, as ResMed reports them - less any
+     * time a large leak excluded from scoring (#19). */
+    const uint32_t excl_s = scored ? Apap_GetSessionLeakExclSeconds() : 0U;
+    const float h = (float)((on_s > excl_s) ? (on_s - excl_s) : 0U) / 3600.0f;
     const float ahi = (h > 0.0167f) ? ((float)(oa + ca + hyp) / h) : 0.0f;
     const float rdi = (h > 0.0167f) ? ((float)(oa + ca + hyp + fl) / h) : 0.0f;
     const float si  = (h > 0.0167f) ? ((float)sn / h) : 0.0f;
@@ -137,7 +140,8 @@ void SessionSummary_OnTherapyStop(void)
         "%.1f,%.1f,%.1f,%.1f,%.0f,%.0f,"
         "%u,%lu,%lu,%lu,%lu,%lu,%.2f,%.2f,%.2f,%s,"
         "%.2f,%.2f,%lu,%lu,"
-        "%lu,%lu,%u,%lu,%u",
+        "%lu,%lu,%u,%lu,%u,"
+        "%lu,%lu",
         (unsigned)SESSION_SUMMARY_SCHEMA, t_start, t_end,
         (RtcClock_IsTimeValid() && s_start_valid) ? 1U : 0U,
         (unsigned long)run_s, (unsigned long)on_s, (unsigned long)off_s,
@@ -162,7 +166,9 @@ void SessionSummary_OnTherapyStop(void)
         (unsigned long)(scored ? PeriodicBreath_GetEpisodes() : 0U),
         (unsigned)s_ramp_auto,
         (unsigned long)((s_ramp_auto != 0U) ? Therapy_GetAutoRampOnsetSeconds() : 0U),
-        (unsigned)((s_ramp_auto != 0U) ? Therapy_GetAutoRampCause() : 0U));
+        (unsigned)((s_ramp_auto != 0U) ? Therapy_GetAutoRampCause() : 0U),
+        (unsigned long)excl_s,
+        (unsigned long)(scored ? Apap_GetSessionLeakExclCount() : 0U));
     if ((n > 0) && ((size_t)n < sizeof(s_line)))
     {
         s_has_last = true;

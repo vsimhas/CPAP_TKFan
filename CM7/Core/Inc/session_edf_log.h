@@ -13,8 +13,9 @@
  *  BRP (1 s records @ 25 Hz): Flow.40ms (L/s), Press.40ms (cmH2O).
  *  PLD (1 s records @ 1 Hz):  MaskPress.2s, Press.2s, Leak.2s.
  *  Only the layout is borrowed - Identification.json carries our own
- *  identity, not a ResMed serial. Disabled by default
- *  (therapy edf enable 1) so FatFs/SD cannot stall USB telemetry.
+ *  identity, not a ResMed serial. Enabled from boot (`therapy edf
+ *  enable 0` switches it off until the next boot); all FatFs work runs
+ *  in SelfTestTask, never in the sensor loop or the USB path.
   ******************************************************************************
   */
 
@@ -37,8 +38,8 @@ typedef enum
 
 void SessionEdf_Init(void);
 
-/* Enable/disable waveform logging (BRP/PLD/EVE) on Therapy_Start (default
- * OFF). The card is mounted whenever one is in, either way - SUMMARY.CSV and
+/* Enable/disable waveform logging (BRP/PLD/EVE/CSL) on Therapy_Start
+ * (default ON). The card is mounted whenever one is in, either way - SUMMARY.CSV and
  * adherence use it for every session. Enabling also retries a failed mount. */
 void SessionEdf_SetEnable(bool en);
 bool SessionEdf_IsEnabled(void);

@@ -637,6 +637,7 @@ void screenView::renderCurrentPage()
     case Page::VALUE_AUTOSET_MIN:
     case Page::VALUE_AUTOSET_MAX:
     case Page::VALUE_RAMP:
+    case Page::VALUE_RAMP_START:
     case Page::VALUE_EPR:
     case Page::VALUE_EPR_TYPE:
     case Page::VALUE_EPR_LEVEL:

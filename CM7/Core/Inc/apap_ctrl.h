@@ -112,6 +112,15 @@ float      Apap_GetSessionFlIndexP95(void);
 uint32_t   Apap_GetSessionFlSeconds(void);    /* time flow-limited (FL flag) */
 uint32_t   Apap_GetSessionSnoreSeconds(void); /* time snoring */
 
+/* #19 leak-invalidated scoring: while unintentional leak is HIGH (after a
+ * short debounce, plus a settling time after it drops) no event is scored,
+ * FL / snore time and the PLD indices stop, and the time is left out of the
+ * AHI / RDI / SI denominator. Reported in SUMMARY.CSV (leak_excl_s / _n). */
+bool       Apap_IsLeakExcluded(void);
+uint32_t   Apap_GetSessionLeakExclSeconds(void);
+uint32_t   Apap_GetSessionLeakExclCount(void);
+uint32_t   Apap_GetLeakExclDroppedEvents(void);   /* events not scored */
+
 /* #38 AutoRamp: sleep onset as the AirSense defines it. Latched from
  * Apap_OnTherapyStart until the next start; the detectors also run (score
  * only) while therapy is in RAMP. */

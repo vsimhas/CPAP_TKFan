@@ -129,6 +129,8 @@ struct Settings
     bool           epr_allowed;
     bool           smart_start_allowed;
     bool           smart_stop_allowed;
+    uint8_t        ramp_start_half;      /* #5: ramp start pressure, 0.5 steps, */
+                                         /* 8 (4.0) .. the therapy pressure    */
 };
 
 /* Convert half-cmH2O step value to actual pressure in cmH2O (float). */
@@ -136,6 +138,8 @@ inline float cpapPressureCmh2o(uint8_t half) { return static_cast<float>(half) *
 uint8_t      stepCpapPressureHalf(uint8_t v, int delta);  /* clamps 8..50 */
 uint8_t      stepApapMinPressureHalf(uint8_t min_half, uint8_t max_half, int delta);
 uint8_t      stepApapMaxPressureHalf(uint8_t min_half, uint8_t max_half, int delta);
+/* #5: 4.0 cmH2O up to the CPAP pressure (CPAP) or the minimum (AutoSet). */
+uint8_t      stepRampStartHalf(uint8_t v, uint8_t ceiling_half, int delta);
 
 /* Singleton accessor. Default values are populated on first call. */
 Settings& getSettings();

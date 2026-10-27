@@ -289,6 +289,9 @@ extern volatile float   g_apap_snore_off_s;
 extern volatile float   g_apap_snore_raise_scale;
 extern volatile float   g_apap_snore_hp_hz;
 extern volatile uint8_t g_apap_onset_breaths;
+extern volatile uint8_t g_apap_leak_excl_enable;
+extern volatile float   g_apap_leak_excl_enter_s;
+extern volatile float   g_apap_leak_excl_exit_s;
 extern volatile float   g_apap_onset_period_tol;
 extern volatile float   g_apap_onset_peak_tol;
 extern volatile uint8_t g_apap_onset_events;
@@ -1386,6 +1389,21 @@ static int Telem_SetApapFloatParam(const char *name, float value)
     g_therapy_autoramp_max_min = (uint8_t)((value < 5.0f) ? 5.0f : ((value > 45.0f) ? 45.0f : value));
     return 1;
   }
+  if (strcmp(name, "leak_excl") == 0)          /* #19 */
+  {
+    g_apap_leak_excl_enable = (value != 0.0f) ? 1U : 0U;
+    return 1;
+  }
+  if (strcmp(name, "leak_excl_enter_s") == 0)
+  {
+    g_apap_leak_excl_enter_s = value;
+    return 1;
+  }
+  if (strcmp(name, "leak_excl_exit_s") == 0)
+  {
+    g_apap_leak_excl_exit_s = value;
+    return 1;
+  }
   if (strcmp(name, "pb_enable") == 0)
   {
     g_pb_enable = (value != 0.0f) ? 1U : 0U;
@@ -1850,14 +1868,15 @@ static void Telem_ProcessOneCommand(const char *cmd)
 
   if (strcmp(cmd, "therapy apap events") == 0)
   {
-    char line[416];
+    char line[480];
     int n = snprintf(line, sizeof(line),
                      "# APAP OA=%lu CA=%lu Hyp=%lu FL=%lu Snore=%lu "
                      "t_ms=%lu AHI=%.2f RDI=%.2f SI=%.2f "
                      "st=%s hyp=%u fl=%u sn=%u leak_blk=%u "
                      "pol=%d pol_ev=%.1f pol_bad=%u flat=%.2f dip=%.2f "
                      "fli=%.2f snl=%.2f fli_avg=%.2f fli_p95=%.2f fl_s=%lu sn_s=%lu snr=%.3f "
-                     "pb=%u pb_s=%lu pb_n=%lu pb_r=%.2f pb_d=%.2f pb_T=%.0f\r\n",
+                     "pb=%u pb_s=%lu pb_n=%lu pb_r=%.2f pb_d=%.2f pb_T=%.0f "
+                     "lx=%u lx_s=%lu lx_n=%lu lx_drop=%lu\r\n",
                      (unsigned long)Apap_GetEventOaCount(),
                      (unsigned long)Apap_GetEventCaCount(),
                      (unsigned long)Apap_GetEventHypCount(),
@@ -1894,7 +1913,12 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      (unsigned long)PeriodicBreath_GetEpisodes(),
                      (double)PeriodicBreath_GetLastCorr(),
                      (double)PeriodicBreath_GetLastDepth(),
-                     (double)PeriodicBreath_GetLastPeriodS());
+                     (double)PeriodicBreath_GetLastPeriodS(),
+                     /* #19: leak exclusion and the events it kept out. */
+                     Apap_IsLeakExcluded() ? 1U : 0U,
+                     (unsigned long)Apap_GetSessionLeakExclSeconds(),
+                     (unsigned long)Apap_GetSessionLeakExclCount(),
+                     (unsigned long)Apap_GetLeakExclDroppedEvents());
     Telem_PushAck(cmd);
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
@@ -2244,14 +2268,28 @@ static void Telem_ProcessOneCommand(const char *cmd)
     return;
   }
 
+  if (strncmp(cmd, "therapy set ramp_start ", 23U) == 0)
+  {
+    float v = 0.0f;
+    if (sscanf(&cmd[23], "%f", &v) != 1 || (v < 4.0f) || (v > 25.0f))
+    {
+      Telem_PushErr("ramp_start range 4..25 cmH2O");
+      return;
+    }
+    Therapy_SetRampStartPressure(v);     /* #5 */
+    Telem_PushAck(cmd);
+    return;
+  }
+
   if (strcmp(cmd, "therapy ramp status") == 0)
   {
     char line[200];
     int n = snprintf(line, sizeof(line),
-                     "# RAMP auto=%u min=%u st=%s elapsed_s=%lu phase=%u cause=%u "
+                     "# RAMP auto=%u min=%u start=%.1f st=%s elapsed_s=%lu phase=%u cause=%u "
                      "onset_s=%lu stable=%lu sleep=%u sp=%.2f\r\n",
                      Therapy_GetRampAuto() ? 1U : 0U,
                      (unsigned)Therapy_GetRampMinutes(),
+                     (double)Therapy_GetRampStartPressure(),
                      Therapy_GetStateName(),
                      (unsigned long)(g_therapy_ramp_elapsed_ms / 1000U),
                      (unsigned)Therapy_GetAutoRampPhase(),

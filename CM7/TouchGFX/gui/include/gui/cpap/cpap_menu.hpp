@@ -30,6 +30,7 @@ enum class Page : uint8_t
     VALUE_AUTOSET_MIN,   /* Autoset range minimum                          */
     VALUE_AUTOSET_MAX,   /* Autoset range maximum                          */
     VALUE_RAMP,          /* value editor                                      */
+    VALUE_RAMP_START,    /* ramp start pressure (#5)                          */
     VALUE_EPR,
     VALUE_EPR_TYPE,
     VALUE_EPR_LEVEL,

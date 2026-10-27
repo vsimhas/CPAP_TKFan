@@ -128,6 +128,10 @@ uint8_t Therapy_GetRampMinutes(void);
  * sleep onset, then rise to the target at g_therapy_autoramp_rate_cmh2o_min,
  * reaching it within g_therapy_autoramp_max_min of start regardless. */
 void     Therapy_SetRampAuto(bool en);
+/* #5: pressure the ramp (fixed or Auto) starts from; held at 4 cmH2O ..
+ * session target when therapy starts. Default 4. */
+void     Therapy_SetRampStartPressure(float cmh2o);
+float    Therapy_GetRampStartPressure(void);
 bool     Therapy_GetRampAuto(void);
 uint8_t  Therapy_GetAutoRampPhase(void);     /* 0 holding, 1 rising        */
 uint8_t  Therapy_GetAutoRampCause(void);     /* 0 none yet, 1 breathing, 2 events,

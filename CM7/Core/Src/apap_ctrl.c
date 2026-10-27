@@ -253,6 +253,12 @@ volatile uint8_t g_apap_lower_enable               = 1U;
 volatile float   g_apap_lower_rate_cmh2o_per_s     = 0.005f; /* ~0.3/min */
 volatile float   g_apap_stable_before_lower_s      = 20.0f;
 volatile uint8_t g_apap_leak_gate_enable           = 1U;     /* block raises on HIGH */
+/* #19: no scoring on flow corrupted by a large leak. Leak HIGH for enter_s
+ * starts an exclusion, exit_s back below it ends one (the flow estimate needs
+ * a few breaths to settle after the leak changes). */
+volatile uint8_t g_apap_leak_excl_enable          = 1U;
+volatile float   g_apap_leak_excl_enter_s         = 3.0f;
+volatile float   g_apap_leak_excl_exit_s          = 10.0f;
 
 /* === Live state === */
 volatile uint8_t  g_apap_state                     = (uint8_t)APAP_STATE_IDLE;
@@ -386,6 +392,12 @@ static float      s_onset_period_ms = 0.0f;   /* running averages */
 static float      s_onset_peak_slm = 0.0f;
 static uint32_t   s_onset_ev_ms[ONSET_EV_N];  /* g_apap_therapy_ms of each */
 static uint32_t   s_onset_ev_n = 0U;
+/* #19: leak exclusion. */
+static bool       s_leak_excl = false;
+static uint32_t   s_leak_excl_timer_ms = 0U;  /* toward entry / exit */
+static uint32_t   s_sess_leak_excl_ms = 0U;
+static uint32_t   s_sess_leak_excl_n = 0U;
+static uint32_t   s_leak_excl_dropped = 0U;    /* events not scored */
 static float      s_resume_ref_slm = 0.0f;    /* baseline held at episode start */
 /* R2: one long hypopnea is one event - re-arm only after a breath that is
  * no longer hypopnea-limited. */
@@ -423,6 +435,7 @@ static bool       s_ev_hyp_open = false;
 static uint32_t   s_ev_hyp_start = 0U;
 static uint32_t   s_ev_hyp_recov_start = 0U;   /* first breath of the recovery */
 static void       evNoteApnea(SessionEdfEvent_t type);
+static bool       scoreApnea(bool obstructive);
 /* R1: detector progress saved at NO_BREATH entry, restored if the episode
  * ends without ever reaching FOT (a hypopnea that briefly lost a breath). */
 static bool       s_episode_reached_fot = false;
@@ -617,13 +630,44 @@ static void applyOaDurationRaise(void)
     }
 }
 
+/* #19: leak HIGH (unintentional leak over Leak_GetHighThreshold) held for
+ * enter_s excludes scoring; exit_s below it ends the exclusion. */
+static void updateLeakExclusion(uint32_t dt_ms)
+{
+    const bool high = (g_apap_leak_excl_enable != 0U)
+                   && (Leak_GetSeverity() == LEAK_SEV_HIGH);
+    if (high == s_leak_excl)
+    {
+        s_leak_excl_timer_ms = 0U;
+        return;
+    }
+    s_leak_excl_timer_ms += dt_ms;
+    const float need_s = s_leak_excl ? clampf(g_apap_leak_excl_exit_s, 0.0f, 120.0f)
+                                     : clampf(g_apap_leak_excl_enter_s, 0.0f, 60.0f);
+    if (s_leak_excl_timer_ms < (uint32_t)(need_s * 1000.0f))
+    {
+        return;
+    }
+    s_leak_excl_timer_ms = 0U;
+    s_leak_excl = high;
+    if (high)
+    {
+        s_sess_leak_excl_n++;
+        PeriodicBreath_Interrupt();   /* #32: no span across corrupted flow */
+    }
+}
+
 static float sessionHours(void)
 {
-    if (g_apap_therapy_ms < 1000U)
+    /* #19: time excluded for leak is not scored, so it is not in the
+     * denominator either. */
+    const uint32_t ms = (g_apap_therapy_ms > s_sess_leak_excl_ms)
+                      ? (g_apap_therapy_ms - s_sess_leak_excl_ms) : 0U;
+    if (ms < 1000U)
     {
         return 0.0f;
     }
-    return (float)g_apap_therapy_ms / 3600000.0f;
+    return (float)ms / 3600000.0f;
 }
 
 static void refreshFotMetrics(void)
@@ -691,8 +735,7 @@ static void restoreDetectorsAfterEpisode(void)
     {
         if (!ended_limited)
         {
-            if (s_deferred_oa) { g_apap_evt_oa++; evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA); }
-            else               { g_apap_evt_ca++; evNoteApnea(SESSION_EVT_CENTRAL_APNEA); }
+            (void)scoreApnea(s_deferred_oa);
             s_apnea_need_recovery = true;
         }
         s_deferred_oa = false;
@@ -820,6 +863,28 @@ static void evNoteApnea(SessionEdfEvent_t type)
     {
         onsetNoteEvent();         /* #38 */
     }
+}
+
+/* Count one apnea and queue its annotation - unless a large leak has
+ * excluded scoring (#19). Returns whether it was scored. */
+static bool scoreApnea(bool obstructive)
+{
+    if (s_leak_excl)
+    {
+        s_leak_excl_dropped++;
+        return false;
+    }
+    if (obstructive)
+    {
+        g_apap_evt_oa++;
+        evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA);
+    }
+    else
+    {
+        g_apap_evt_ca++;
+        evNoteApnea(SESSION_EVT_CENTRAL_APNEA);
+    }
+    return true;
 }
 
 static void evFlushHold(void)
@@ -984,6 +1049,11 @@ static void resetSessionEvents(void)
     s_sess_fl_sum = 0.0f;
     s_sess_fl_ms = 0U;
     s_sess_snore_ms = 0U;
+    s_leak_excl = false;              /* #19 */
+    s_leak_excl_timer_ms = 0U;
+    s_sess_leak_excl_ms = 0U;
+    s_sess_leak_excl_n = 0U;
+    s_leak_excl_dropped = 0U;
     s_fl_index = 0.0f;
     s_fl_index_age_ms = FL_IDX_HOLD_MS;
 }
@@ -999,7 +1069,7 @@ static void noteFlEdge(void)
 {
     if (s_fl_active && !s_fl_was_active)
     {
-        g_apap_evt_fl++;
+        if (s_leak_excl) { s_leak_excl_dropped++; } else { g_apap_evt_fl++; }
     }
     s_fl_was_active = s_fl_active;
 }
@@ -1008,7 +1078,7 @@ static void noteSnoreEdge(void)
 {
     if (s_snore_active && !s_snore_was_active)
     {
-        g_apap_evt_snore++;
+        if (s_leak_excl) { s_leak_excl_dropped++; } else { g_apap_evt_snore++; }
     }
     s_snore_was_active = s_snore_active;
 }
@@ -1071,7 +1141,14 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         (uint32_t)(clampf(g_apap_hyp_min_duration_s, 5.0f, 60.0f) * 1000.0f);
 
     g_apap_fl_last_peak_slm = peak_slm;
-    onsetNoteBreath(peak_slm, approx_breath_ms, min_peak);   /* #38 */
+    if (s_leak_excl)
+    {
+        s_onset_stable_n = 0U;    /* #38 / #19: not evidence of anything */
+    }
+    else
+    {
+        onsetNoteBreath(peak_slm, approx_breath_ms, min_peak);   /* #38 */
+    }
 
     /* Independent flattening heuristic: insp mean/peak. Square/plateau
      * waveforms sit near 1; peaked breaths sit nearer 0.5. R13: over the
@@ -1098,7 +1175,9 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         return;
     }
 
-    /* #61: session distribution over real breaths only. */
+    /* #61: session distribution over real breaths only (#19: not on a
+     * leak-corrupted one). */
+    if (!s_leak_excl)
     {
         uint32_t bin = (uint32_t)lrintf(s_fl_index * 100.0f);
         if (bin >= FL_IDX_HIST_N) { bin = FL_IDX_HIST_N - 1U; }
@@ -1186,11 +1265,18 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
             {
                 s_hyp_active = true;
                 s_hyp_need_recovery = true;   /* R2: no re-count until recovery */
-                g_apap_evt_hyp++;
-                evHypOpen(s_hyp_limited_ms);  /* #59 */
-                onsetNoteEvent();             /* #38 */
+                if (s_leak_excl)
+                {
+                    s_leak_excl_dropped++;    /* #19: not scored */
+                }
+                else
+                {
+                    g_apap_evt_hyp++;
+                    evHypOpen(s_hyp_limited_ms);  /* #59 */
+                    onsetNoteEvent();             /* #38 */
+                }
                 s_since_hyp_ms = 0U;          /* R8b */
-                if ((s_pending_ca_ms > 0U) && (g_apap_evt_ca > 0U))
+                if (!s_leak_excl && (s_pending_ca_ms > 0U) && (g_apap_evt_ca > 0U))
                 {
                     g_apap_evt_ca--;          /* R4: same event, now a Hyp */
                     s_pending_ca_ms = 0U;
@@ -1847,12 +1933,13 @@ float Apap_GetSessionSnoreIndex(void)
 
 float Apap_GetFlowLimIndex(void)
 {
-    return (s_active && (s_fl_index_age_ms < FL_IDX_HOLD_MS)) ? s_fl_index : 0.0f;
+    return (s_active && !s_leak_excl && (s_fl_index_age_ms < FL_IDX_HOLD_MS))
+               ? s_fl_index : 0.0f;
 }
 
 float Apap_GetSnoreLevel(void)
 {
-    if (!s_active || !s_snore_active)
+    if (!s_active || !s_snore_active || s_leak_excl)
     {
         return 0.0f;
     }
@@ -1876,6 +1963,26 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
         return keep;
     }
     return apapUpdate(dt_s, therapy_state, mask_off);
+}
+
+bool Apap_IsLeakExcluded(void)
+{
+    return s_leak_excl;
+}
+
+uint32_t Apap_GetSessionLeakExclSeconds(void)
+{
+    return s_sess_leak_excl_ms / 1000U;
+}
+
+uint32_t Apap_GetSessionLeakExclCount(void)
+{
+    return s_sess_leak_excl_n;
+}
+
+uint32_t Apap_GetLeakExclDroppedEvents(void)
+{
+    return s_leak_excl_dropped;
 }
 
 ApapOnset_t Apap_GetSleepOnset(void)
@@ -1985,9 +2092,17 @@ static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off)
     const uint32_t dt_ms = (uint32_t)lrintf(dt_s * 1000.0f);
     g_apap_therapy_ms += dt_ms;
     if (s_fl_index_age_ms < FL_IDX_HOLD_MS) { s_fl_index_age_ms += dt_ms; }
-    if (s_fl_active)    { s_sess_fl_ms += dt_ms; }      /* #61 */
-    if (s_snore_active) { s_sess_snore_ms += dt_ms; }   /* #60 */
-    PeriodicBreath_Update(Flow_GetPatientSlm(), dt_ms);  /* #32 */
+    updateLeakExclusion(dt_ms);                          /* #19 */
+    if (s_leak_excl)
+    {
+        s_sess_leak_excl_ms += dt_ms;
+    }
+    else
+    {
+        if (s_fl_active)    { s_sess_fl_ms += dt_ms; }      /* #61 */
+        if (s_snore_active) { s_sess_snore_ms += dt_ms; }   /* #60 */
+        PeriodicBreath_Update(Flow_GetPatientSlm(), dt_ms);  /* #32 */
+    }
     s_pending_ca_ms = (s_pending_ca_ms > dt_ms) ? (s_pending_ca_ms - dt_ms) : 0U;
     if (s_ev_hold && (s_pending_ca_ms == 0U))
     {
@@ -2143,8 +2258,7 @@ static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off)
                     if (s_episode_after_hyp) { s_deferred_oa = true; }   /* R8b */
                     else
                     {
-                        g_apap_evt_oa++;
-                        evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA);
+                        (void)scoreApnea(true);
                         s_apnea_need_recovery = true;
                     }
                     s_osa_event_armed = false;
@@ -2159,10 +2273,8 @@ static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off)
                     if (s_episode_after_hyp) { s_deferred_ca = true; }   /* R8b */
                     else
                     {
-                        g_apap_evt_ca++;
-                        evNoteApnea(SESSION_EVT_CENTRAL_APNEA);
+                        s_episode_scored_ca = scoreApnea(false);
                         s_apnea_need_recovery = true;
-                        s_episode_scored_ca = true;
                     }
                     s_ca_event_armed = false;
                 }
@@ -2180,8 +2292,7 @@ static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off)
                 if (s_episode_after_hyp) { s_deferred_oa = true; }   /* R8b */
                 else
                 {
-                    g_apap_evt_oa++;
-                    evNoteApnea(SESSION_EVT_OBSTRUCTIVE_APNEA);
+                    (void)scoreApnea(true);
                     s_apnea_need_recovery = true;
                 }
                 s_osa_event_armed = false;

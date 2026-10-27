@@ -44,6 +44,7 @@ const ListItem k_my_options_items[] = {
     { "Min Pressure",     Page::VALUE_AUTOSET_MIN,     Mode::VALUE_EDIT },
     { "Max Pressure",     Page::VALUE_AUTOSET_MAX,     Mode::VALUE_EDIT },
     { "Ramp Time",        Page::VALUE_RAMP,            Mode::VALUE_EDIT },
+    { "Ramp Start",       Page::VALUE_RAMP_START,      Mode::VALUE_EDIT },
     { "Pressure Relief",  Page::VALUE_EPR,             Mode::VALUE_EDIT },
     { "EPR Type",         Page::VALUE_EPR_TYPE,        Mode::VALUE_EDIT },
     { "EPR Level",        Page::VALUE_EPR_LEVEL,       Mode::VALUE_EDIT },
@@ -105,6 +106,7 @@ Page parentList(Page p)
     case Page::VALUE_AUTOSET_MIN:
     case Page::VALUE_AUTOSET_MAX:
     case Page::VALUE_RAMP:
+    case Page::VALUE_RAMP_START:
     case Page::VALUE_EPR:
     case Page::VALUE_EPR_TYPE:
     case Page::VALUE_EPR_LEVEL:
@@ -267,14 +269,19 @@ const char* MenuController::itemValue(uint8_t idx) const
                        static_cast<double>(cpapPressureCmh2o(s.apap_max_pressure_half)));
         return g_editor_value_buf;
     case 5: return toString(s.ramp);
-    case 6: return s.epr_allowed         ? toString(s.epr)         : "Locked";
-    case 7: return eprSubSettingLocked(s) ? "Locked"               : toString(s.epr_type);
-    case 8: return eprSubSettingLocked(s) ? "Locked"               : toString(s.epr_level);
-    case 9: return s.smart_start_allowed ? toString(s.smart_start) : "Locked";
-    case 10: return s.smart_stop_allowed  ? toString(s.smart_stop)  : "Locked";
-    case 11: return toString(s.tube_temp_mode);
-    case 12: return toString(s.climate_mode);
-    case 13: return toString(s.humidity);
+    case 6:
+        (void)snprintf(g_editor_value_buf, sizeof(g_editor_value_buf),
+                       "%.1f cmH2O",
+                       static_cast<double>(cpapPressureCmh2o(s.ramp_start_half)));
+        return g_editor_value_buf;
+    case 7: return s.epr_allowed         ? toString(s.epr)         : "Locked";
+    case 8: return eprSubSettingLocked(s) ? "Locked"               : toString(s.epr_type);
+    case 9: return eprSubSettingLocked(s) ? "Locked"               : toString(s.epr_level);
+    case 10: return s.smart_start_allowed ? toString(s.smart_start) : "Locked";
+    case 11: return s.smart_stop_allowed  ? toString(s.smart_stop)  : "Locked";
+    case 12: return toString(s.tube_temp_mode);
+    case 13: return toString(s.climate_mode);
+    case 14: return toString(s.humidity);
     default: return nullptr;
     }
 }
@@ -334,6 +341,13 @@ void MenuController::onRotaryDelta(int delta)
             break;
         case Page::VALUE_RAMP:
             s.ramp = step(s.ramp, delta); break;
+        case Page::VALUE_RAMP_START:
+            /* #5: up to the pressure therapy starts at. */
+            s.ramp_start_half = stepRampStartHalf(
+                s.ramp_start_half,
+                isCpapMode(s) ? s.cpap_pressure_half : s.apap_min_pressure_half,
+                delta);
+            break;
         case Page::VALUE_EPR:
             if (s.epr_allowed)
             {
@@ -497,6 +511,7 @@ void MenuController::enterSelectedItem()
         }
         Therapy_SetRampMinutes(ramp_min);
         Therapy_SetRampAuto(s.ramp == RampMode::AUTO);
+        Therapy_SetRampStartPressure(cpapPressureCmh2o(s.ramp_start_half));   /* #5 */
         Therapy_Start();
     }
 
@@ -536,6 +551,7 @@ const char* MenuController::editorTitle() const
     case Page::VALUE_AUTOSET_MIN:    return "Min Pressure";
     case Page::VALUE_AUTOSET_MAX:    return "Max Pressure";
     case Page::VALUE_RAMP:           return "Ramp Time";
+    case Page::VALUE_RAMP_START:     return "Ramp Start";
     case Page::VALUE_EPR:            return "Pressure Relief (EPR)";
     case Page::VALUE_EPR_TYPE:       return "EPR Type";
     case Page::VALUE_EPR_LEVEL:      return "EPR Level";
@@ -582,6 +598,11 @@ const char* MenuController::editorValueText() const
                        static_cast<double>(cpapPressureCmh2o(s.apap_max_pressure_half)));
         return g_editor_value_buf;
     case Page::VALUE_RAMP:           return toString(s.ramp);
+    case Page::VALUE_RAMP_START:
+        (void)snprintf(g_editor_value_buf, sizeof(g_editor_value_buf),
+                       "%.1f cmH2O",
+                       static_cast<double>(cpapPressureCmh2o(s.ramp_start_half)));
+        return g_editor_value_buf;
     case Page::VALUE_EPR:            return toString(s.epr);
     case Page::VALUE_EPR_TYPE:       return toString(s.epr_type);
     case Page::VALUE_EPR_LEVEL:
@@ -615,6 +636,8 @@ const char* MenuController::editorHint() const
         return "Autoset range 4.0 - 25.0 cmH2O   Click: save";
     case Page::VALUE_RAMP:
         return "Rotate: change   Click: save";
+    case Page::VALUE_RAMP_START:
+        return "4.0 up to the therapy pressure   Click: save";
     case Page::VALUE_TUBE_TEMP_MODE:
         return "Manual? Click for temp.";
     case Page::VALUE_TUBE_TEMP_C:
