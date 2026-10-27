@@ -105,7 +105,13 @@ typedef enum
 
     /* CM4 `cm4_status_seq` in the blower IPC mailbox stopped advancing
      * while therapy expected the motor domain to be alive. */
-    THERAPY_FAULT_CM4_HEARTBEAT
+    THERAPY_FAULT_CM4_HEARTBEAT,
+
+    /* #83: the pre-therapy self-test refused the start (precheck.h) - a
+     * frozen / implausible pressure, flow or ambient sensor, or a motor
+     * drive that is silent, faulted or unpowered. The screen shows
+     * "Self-test: <what>"; FAULTS.CSV has the readings. */
+    THERAPY_FAULT_PRECHECK
 } TherapyFault_t;
 
 /* Bring-up at boot. Idempotent; safe to call multiple times. */

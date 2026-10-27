@@ -549,6 +549,19 @@ IDLE -> RAMP -> RUNNING -> STOPPING -> IDLE
   AutoSet starts from its minimum when the ramp ends.
 - **RUNNING**: hold the target. In CPAP that is a fixed number; in Autoset the
   APAP algorithm moves it.
+- **Pre-therapy self-test** (#83, `precheck.c`): every start runs it first,
+  from values the sensor loop already keeps. A hard failure refuses the start
+  (FAULT "Self-test: <what>", FAULTS.CSV code 6): the mask-pressure, flow or
+  ambient sensor frozen (its raw word unchanged for 500 ms / 500 ms / 3 s -
+  a dead link, a stopped conversion and a stuck sensor all look the same),
+  mask pressure outside -10..+50 cmH₂O or more than 3 cmH₂O off zero with the
+  blower stopped, a NaN or saturated flow reading, ambient outside
+  500..1150 mbar, the CM4 status counter not advancing for 500 ms, a drive
+  fault active, or the motor supply outside 20..28 V. Warnings (start
+  allowed): the analog pressure sensor more than 2 cmH₂O from the mask sensor,
+  no SD card, clock not set, humidity / tube-temperature sensor not reading.
+  `therapy precheck` prints the check and its readings; `therapy precheck test
+  <what>` forces a failure for testing.
 - **STOPPING**: a two-second spin-down.
 - **FAULT**: blower disabled and stopped. There is no automatic recovery.
 

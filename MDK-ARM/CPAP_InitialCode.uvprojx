@@ -1072,6 +1072,11 @@
               <FilePath>..\CM7\Core\Src\periodic_breath.c</FilePath>
             </File>
             <File>
+              <FileName>precheck.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\precheck.c</FilePath>
+            </File>
+            <File>
               <FileName>ff.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Middlewares\Third_Party\FatFs\src\ff.c</FilePath>
@@ -4968,6 +4973,11 @@
               <FileName>periodic_breath.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\periodic_breath.c</FilePath>
+            </File>
+            <File>
+              <FileName>precheck.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\precheck.c</FilePath>
             </File>
             <File>
               <FileName>ff.c</FileName>

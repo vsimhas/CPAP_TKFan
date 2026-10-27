@@ -34,6 +34,7 @@
 #include "fault_log.h"
 #include "watchdog.h"
 #include "periodic_breath.h"
+#include "precheck.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -427,6 +428,29 @@ static void Telem_PushErr(const char *reason)
 {
   char line[80];
   int n = snprintf(line, sizeof(line), "# err %s\r\n", reason);
+  if ((n > 0) && ((size_t)n < sizeof(line)))
+  {
+    Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+  }
+}
+
+/* #83: run the pre-therapy self-test now and print it (no side effects). */
+static void Telem_PushPrecheck(void)
+{
+  PrecheckResult_t r;
+  (void)Precheck_Run(&r);
+  char line[256];
+  int n = snprintf(line, sizeof(line),
+                   "# PRECHECK ok=%u fail=%s inj=%u warn=0x%02X en=%u ps=%.2f an=%.2f "
+                   "q=%.1f amb=%.1f fz_ps=%lu fz_fs=%lu fz_as=%lu cm4=%lu flt=0x%04X "
+                   "vbus=%.2f rpm=%ld\r\n",
+                   (r.fail == PRECHECK_OK) ? 1U : 0U, Precheck_FailName(r.fail),
+                   r.injected ? 1U : 0U, (unsigned)r.warn, (unsigned)g_precheck_enable,
+                   (double)r.ps_cmh2o, (double)r.analog_cmh2o, (double)r.flow_slm,
+                   (double)r.ambient_mbar, (unsigned long)r.ps_frozen_ms,
+                   (unsigned long)r.fs_frozen_ms, (unsigned long)r.as_frozen_ms,
+                   (unsigned long)r.cm4_stale_ms, (unsigned)r.cm4_faults,
+                   (double)r.vbus_v, (long)r.rpm);
   if ((n > 0) && ((size_t)n < sizeof(line)))
   {
     Telem_BufPush((const uint8_t *)line, (uint32_t)n);
@@ -1827,8 +1851,46 @@ static void Telem_ProcessOneCommand(const char *cmd)
     Telem_DrainQueuedTherapySetCommands();
     Therapy_Start();
     Telem_PushAck(cmd);
+    if (Therapy_GetFault() == THERAPY_FAULT_PRECHECK)
+    {
+      Telem_PushPrecheck();             /* #83: why it refused */
+    }
     /* One status after start is enough — drain above stays quiet. */
     Telem_PushStatus();
+    return;
+  }
+
+  if (strcmp(cmd, "therapy precheck") == 0)
+  {
+    Telem_PushAck(cmd);
+    Telem_PushPrecheck();
+    return;
+  }
+
+  if (strncmp(cmd, "therapy precheck test ", 22U) == 0)
+  {
+    const PrecheckFail_t f = Precheck_ParseName(&cmd[22]);
+    if (f == PRECHECK_COUNT)
+    {
+      Telem_PushErr("precheck test none|ps_frozen|ps_range|ps_offset|fs_frozen|fs_bad|"
+                    "as_frozen|as_range|cm4_stale|cm4_fault|vbus");
+      return;
+    }
+    Precheck_Inject(f);
+    Telem_PushAck(cmd);
+    return;
+  }
+
+  if (strncmp(cmd, "therapy precheck enable ", 24U) == 0)
+  {
+    long v = 0;
+    if (!Telem_ParseLong(&cmd[24], &v) || ((v != 0) && (v != 1)))
+    {
+      Telem_PushErr("therapy precheck enable 0|1");
+      return;
+    }
+    g_precheck_enable = (uint8_t)v;
+    Telem_PushAck(cmd);
     return;
   }
   if (strcmp(cmd, "therapy stop") == 0)

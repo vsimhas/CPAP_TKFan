@@ -48,6 +48,7 @@
 #include "leak_estimator.h"
 #include "therapy.h"
 #include "session_edf_log.h"
+#include "precheck.h"
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
@@ -2529,6 +2530,9 @@ static void SensorTask(void *argument)
     {
       (void)BlowerIpc_CM7_GetStatus(&g_blower_status);
     }
+
+    /* #83: sensor / drive liveness for the pre-therapy self-test. */
+    Precheck_SensorTick(period_ms);
 
     /* ---------- Leak / patient flow (before PID so flow FF is current) --- */
     const float q_total_slm = Flow_GetSlm();

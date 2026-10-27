@@ -22,9 +22,11 @@
 #include "safety_supervisor.h"
 #include "telemetry_stream.h"   /* Telem_PushMaskOff - see enterMaskOff() */
 #include "dbg_log.h"
+#include "precheck.h"
 #include "stm32h7xx_hal.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 
 /* === Compile-time defaults === */
@@ -2121,6 +2123,7 @@ static const char* faultNameOf(TherapyFault_t f)
     case THERAPY_FAULT_SENSOR_OUT_OF_RANGE:  return "Sensor Out Of Range";
     case THERAPY_FAULT_RPM_SATURATED:        return "Cannot Reach Target";
     case THERAPY_FAULT_CM4_HEARTBEAT:        return "CM4 Heartbeat Lost";
+    case THERAPY_FAULT_PRECHECK:             return "Self-Test Failed";
     default:                                  return "?";
     }
 }
@@ -2310,6 +2313,14 @@ TherapyFault_t Therapy_GetFault(void) { return (TherapyFault_t)g_therapy_fault; 
 
 const char* Therapy_GetFaultName(void)
 {
+    if (g_therapy_fault == (uint8_t)THERAPY_FAULT_PRECHECK)
+    {
+        /* #83: say which check, so the user / service knows what to look at. */
+        static char s_buf[48];
+        (void)snprintf(s_buf, sizeof(s_buf), "Self-test: %s",
+                       Precheck_GetLastFailText());
+        return s_buf;
+    }
     return faultNameOf((TherapyFault_t)g_therapy_fault);
 }
 
@@ -2496,6 +2507,31 @@ void Therapy_Start(void)
     if (g_therapy_fault != (uint8_t)THERAPY_FAULT_NONE)
     {
         Therapy_ClearFault();
+    }
+
+    /* #83: pre-therapy self-test, before anything is armed. A hard failure
+     * latches the fault (FAULTS.CSV + screen) and the blower never starts. */
+    if (g_precheck_enable != 0U)
+    {
+        PrecheckResult_t pc;
+        if (!Precheck_Run(&pc))
+        {
+            /* FAULTS.CSV keeps 47 characters of this; pressure, flow, bus
+             * voltage and drive faults have their own columns there. */
+            char why[48];
+            (void)snprintf(why, sizeof(why), "%s%s fz=%lu/%lu/%lu/%lu amb=%.0f",
+                           Precheck_FailToken(pc.fail), pc.injected ? " test" : "",
+                           (unsigned long)pc.ps_frozen_ms, (unsigned long)pc.fs_frozen_ms,
+                           (unsigned long)pc.as_frozen_ms, (unsigned long)pc.cm4_stale_ms,
+                           (double)pc.ambient_mbar);
+            Therapy_LatchFault(THERAPY_FAULT_PRECHECK, why);
+            return;
+        }
+        if (pc.warn != 0U)
+        {
+            DBG_W("THR", "precheck warnings 0x%02X (analog/sd/clock/humid/tube)",
+                  (unsigned)pc.warn);
+        }
     }
 
     /* Re-apply the safety RPM ceiling in case it was poked. */
