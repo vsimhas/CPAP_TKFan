@@ -25,7 +25,8 @@
  *      - Autoset / Autoset for her: APAP titration between min and max
  *        pressure (see apap_ctrl.c). Starts at min; raises on OSA/FL/hyp/snore.
  *      - Optional pressure ramp from RAMP_START to target over the
- *        ramp_minutes setting (Off, Auto = 5 min, or 5..45 min).
+ *        ramp_minutes setting (Off or 5..45 min), or AutoRamp (#38):
+ *        hold the start pressure until sleep onset, then rise.
  *      - Run timer, leak status, current/target pressure available
  *        for the GUI to display.
  *
@@ -123,6 +124,15 @@ void   Therapy_SetTargetPressure(float cmh2o);   /* clamped 4..25         */
 float  Therapy_GetTargetPressure(void);
 void   Therapy_SetRampMinutes(uint8_t minutes);  /* 0 = no ramp           */
 uint8_t Therapy_GetRampMinutes(void);
+/* #38 AutoRamp: overrides the minutes. Hold the ramp start pressure until
+ * sleep onset, then rise to the target at g_therapy_autoramp_rate_cmh2o_min,
+ * reaching it within g_therapy_autoramp_max_min of start regardless. */
+void     Therapy_SetRampAuto(bool en);
+bool     Therapy_GetRampAuto(void);
+uint8_t  Therapy_GetAutoRampPhase(void);     /* 0 holding, 1 rising        */
+uint8_t  Therapy_GetAutoRampCause(void);     /* 0 none yet, 1 breathing, 2 events,
+                                                3 snore, 4 time limit      */
+uint32_t Therapy_GetAutoRampOnsetSeconds(void);  /* start -> onset        */
 void   Therapy_SetMode(TherapyMode_t m);
 TherapyMode_t Therapy_GetMode(void);
 const char*    Therapy_GetModeName(void);

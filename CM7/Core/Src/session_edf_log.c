@@ -39,6 +39,9 @@ volatile uint32_t g_session_edf_pld_records = 0U;
 volatile uint32_t g_session_edf_eve_records = 0U;   /* incl. "Recording starts" */
 volatile uint32_t g_session_edf_eve_error   = 0U;
 volatile uint32_t g_session_edf_eve_dropped = 0U;   /* queue full / not logging */
+/* CSL (#32): periodic-breathing spans, same layout as EVE. */
+volatile uint32_t g_session_edf_csl_records = 0U;   /* incl. "Recording starts" */
+volatile uint32_t g_session_edf_csl_error   = 0U;
 
 #define EDF_HZ              25U
 #define EDF_REC_S           1U
@@ -142,7 +145,12 @@ static char     s_dir_path[32];
  * FALSE (poly 0x1021, init 0xFFFF) of the 62 annotation bytes, little-endian.
  * The first record is "Recording starts". Onset is whole seconds from the
  * header start time and marks the event's END (ResMed's convention, which
- * OSCAR follows); OSCAR matches the text case-insensitively by prefix. */
+ * OSCAR follows); OSCAR matches the text case-insensitively by prefix.
+ *
+ * CSL (#32) is the same file layout (checked against the AirSense 11 CSL.edf
+ * on the same card): OSCAR reads a "CSR Start" / "CSR End" pair from it as
+ * one Cheyne-Stokes span, from the onsets alone. Both files share the event
+ * queue; the type picks the file. */
 #define EVE_REC_BYTES       64U
 #define EVE_ANN_BYTES       62U
 #define EVE_HDR_BYTES       768U
@@ -157,16 +165,27 @@ typedef struct
     uint16_t dur_ds;                         /* 0.1 s */
 } EveItem_t;
 
-static FIL      s_eve_fil;
-static uint8_t  s_eve_open = 0U;
-static char     s_eve_path[64];
+typedef struct
+{
+    FIL      fil;
+    uint8_t  open;
+    uint8_t  err_tag;                        /* 0x5 EVE, 0x6 CSL */
+    char     path[64];
+    volatile uint32_t *records;
+    volatile uint32_t *error;
+} AnnFile_t;
+
+static AnnFile_t s_eve = { .err_tag = 0x5U, .records = &g_session_edf_eve_records,
+                           .error = &g_session_edf_eve_error };
+static AnnFile_t s_csl = { .err_tag = 0x6U, .records = &g_session_edf_csl_records,
+                           .error = &g_session_edf_csl_error };
 static EveItem_t s_eve_q[EVE_Q_N];
 static volatile uint8_t s_eve_q_head = 0U;   /* producer: therapy tick */
 static volatile uint8_t s_eve_q_tail = 0U;   /* consumer: Service */
 static volatile uint32_t s_ticks = 0U;       /* BRP samples since open */
 
 static const char * const k_eve_text[SESSION_EVT_COUNT] = {
-    "Obstructive Apnea", "Central Apnea", "Hypopnea"
+    "Obstructive Apnea", "Central Apnea", "Hypopnea", "CSR Start", "CSR End"
 };
 
 static uint16_t crc16CcittFalse(const uint8_t *p, uint32_t n)
@@ -209,41 +228,42 @@ static void eveBuildRecord(uint8_t rec[EVE_REC_BYTES], uint32_t onset_s,
     rec[EVE_ANN_BYTES + 1U] = (uint8_t)(crc >> 8);
 }
 
-static void eveSetErr(uint32_t stage, FRESULT fr)
+static void annSetErr(AnnFile_t *f, uint32_t stage, FRESULT fr)
 {
-    g_session_edf_eve_error = 0x5000U | ((stage & 0xFU) << 8) | ((uint32_t)fr & 0xFFU);
+    *f->error = ((uint32_t)f->err_tag << 12) | ((stage & 0xFU) << 8)
+              | ((uint32_t)fr & 0xFFU);
 }
 
 /* Header record count, rewritten after each batch so a session cut short
  * (power loss) still reads back with the events written so far. */
-static bool eveWriteCount(void)
+static bool annWriteCount(AnnFile_t *f)
 {
-    char f[9];
+    char cnt[9];
     UINT bw = 0U;
-    (void)snprintf(f, sizeof(f), "%-8lu", (unsigned long)g_session_edf_eve_records);
-    FRESULT fr = f_lseek(&s_eve_fil, EVE_NREC_OFFSET);
-    if (fr == FR_OK) { fr = f_write(&s_eve_fil, f, 8U, &bw); }
+    (void)snprintf(cnt, sizeof(cnt), "%-8lu", (unsigned long)*f->records);
+    FRESULT fr = f_lseek(&f->fil, EVE_NREC_OFFSET);
+    if (fr == FR_OK) { fr = f_write(&f->fil, cnt, 8U, &bw); }
     if ((fr != FR_OK) || (bw != 8U))
     {
-        eveSetErr(4U, fr);
+        annSetErr(f, 4U, fr);
         return false;
     }
     return true;
 }
 
-static bool eveAppend(const uint8_t rec[EVE_REC_BYTES])
+static bool annAppend(AnnFile_t *f, const uint8_t rec[EVE_REC_BYTES])
 {
     UINT bw = 0U;
     const FSIZE_t at = (FSIZE_t)EVE_HDR_BYTES
-                     + ((FSIZE_t)g_session_edf_eve_records * EVE_REC_BYTES);
-    FRESULT fr = f_lseek(&s_eve_fil, at);
-    if (fr == FR_OK) { fr = f_write(&s_eve_fil, rec, EVE_REC_BYTES, &bw); }
+                     + ((FSIZE_t)*f->records * EVE_REC_BYTES);
+    FRESULT fr = f_lseek(&f->fil, at);
+    if (fr == FR_OK) { fr = f_write(&f->fil, rec, EVE_REC_BYTES, &bw); }
     if ((fr != FR_OK) || (bw != EVE_REC_BYTES))
     {
-        eveSetErr(3U, fr);
+        annSetErr(f, 3U, fr);
         return false;
     }
-    g_session_edf_eve_records++;
+    (*f->records)++;
     return true;
 }
 
@@ -253,22 +273,21 @@ static void eveField(char *hdr, uint32_t off, uint32_t width, const char *text)
     memcpy(&hdr[off], text, (len < width) ? len : width);
 }
 
-static void eveOpen(const char *patient, const char *recording)
+static void annOpen(AnnFile_t *f, const char *patient, const char *recording)
 {
     static char hdr[EVE_HDR_BYTES];
     char tmp[24];
     UINT bw = 0U;
     uint8_t rec[EVE_REC_BYTES];
 
-    s_eve_open = 0U;
-    g_session_edf_eve_records = 0U;
-    g_session_edf_eve_error = 0U;
-    g_session_edf_eve_dropped = 0U;
+    f->open = 0U;
+    *f->records = 0U;
+    *f->error = 0U;
 
-    FRESULT fr = f_open(&s_eve_fil, s_eve_path, FA_CREATE_ALWAYS | FA_WRITE);
+    FRESULT fr = f_open(&f->fil, f->path, FA_CREATE_ALWAYS | FA_WRITE);
     if (fr != FR_OK)
     {
-        eveSetErr(1U, fr);
+        annSetErr(f, 1U, fr);
         return;
     }
     memset(hdr, ' ', sizeof(hdr));
@@ -303,65 +322,77 @@ static void eveOpen(const char *patient, const char *recording)
     eveField(hdr, 696U, 8U, "1");
     /* reserved 2x32 blank */
 
-    fr = f_write(&s_eve_fil, hdr, sizeof(hdr), &bw);
+    fr = f_write(&f->fil, hdr, sizeof(hdr), &bw);
     if ((fr != FR_OK) || (bw != sizeof(hdr)))
     {
-        eveSetErr(2U, fr);
-        (void)f_close(&s_eve_fil);
+        annSetErr(f, 2U, fr);
+        (void)f_close(&f->fil);
         return;
     }
-    s_eve_open = 1U;
+    f->open = 1U;
     eveBuildRecord(rec, 0U, 0U, "Recording starts");
-    if (!eveAppend(rec) || !eveWriteCount() || (f_sync(&s_eve_fil) != FR_OK))
+    if (!annAppend(f, rec) || !annWriteCount(f) || (f_sync(&f->fil) != FR_OK))
     {
-        (void)f_close(&s_eve_fil);
-        s_eve_open = 0U;
+        (void)f_close(&f->fil);
+        f->open = 0U;
     }
 }
 
-/* Drain the RAM queue into records. Like PLD, errors are swallowed: a bad
- * EVE file must never take down the BRP session. */
+static void annDrop(AnnFile_t *f)
+{
+    (void)f_close(&f->fil);
+    f->open = 0U;
+}
+
+/* Drain the RAM queue into records, EVE or CSL by type. Like PLD, errors are
+ * swallowed: a bad annotation file must never take down the BRP session. */
 static void eveService(void)
 {
     uint8_t rec[EVE_REC_BYTES];
-    bool wrote = false;
+    bool wrote_eve = false;
+    bool wrote_csl = false;
 
     while (s_eve_q_tail != s_eve_q_head)
     {
         const EveItem_t it = s_eve_q[s_eve_q_tail];
         s_eve_q_tail = (uint8_t)((s_eve_q_tail + 1U) % EVE_Q_N);
-        if ((s_eve_open == 0U) || (it.type >= (uint8_t)SESSION_EVT_COUNT))
+        if (it.type >= (uint8_t)SESSION_EVT_COUNT)
+        {
+            continue;
+        }
+        const bool csl = (it.type >= (uint8_t)SESSION_EVT_CSR_START);
+        AnnFile_t *f = csl ? &s_csl : &s_eve;
+        if (f->open == 0U)
         {
             continue;
         }
         eveBuildRecord(rec, it.end_ticks / EDF_TICKS_PER_S,
                        ((uint32_t)it.dur_ds + 5U) / 10U, k_eve_text[it.type]);
-        if (!eveAppend(rec))
+        if (!annAppend(f, rec))
         {
-            (void)f_close(&s_eve_fil);
-            s_eve_open = 0U;
-            return;
+            annDrop(f);
+            continue;
         }
-        wrote = true;
+        if (csl) { wrote_csl = true; } else { wrote_eve = true; }
     }
-    if (wrote && (!eveWriteCount() || (f_sync(&s_eve_fil) != FR_OK)))
+    if (wrote_eve && (!annWriteCount(&s_eve) || (f_sync(&s_eve.fil) != FR_OK)))
     {
-        (void)f_close(&s_eve_fil);
-        s_eve_open = 0U;
+        annDrop(&s_eve);
+    }
+    if (wrote_csl && (!annWriteCount(&s_csl) || (f_sync(&s_csl.fil) != FR_OK)))
+    {
+        annDrop(&s_csl);
     }
 }
 
 static void eveClose(void)
 {
-    if (s_eve_open != 0U)
+    if ((s_eve.open != 0U) || (s_csl.open != 0U))
     {
         eveService();
     }
-    if (s_eve_open != 0U)
-    {
-        (void)f_close(&s_eve_fil);
-        s_eve_open = 0U;
-    }
+    if (s_eve.open != 0U) { annDrop(&s_eve); }
+    if (s_csl.open != 0U) { annDrop(&s_csl); }
 }
 
 static void setErr(uint32_t e)
@@ -483,13 +514,14 @@ void SessionEdf_SetEnable(bool en)
  * the missing card, so nothing waits on SDMMC timeouts. */
 static void detachCard(void)
 {
-    if (s_edf.open || s_pld.open || (s_eve_open != 0U))
+    if (s_edf.open || s_pld.open || (s_eve.open != 0U) || (s_csl.open != 0U))
     {
         setErr(0x1000U);                     /* removed during a session */
     }
     s_edf.open = false;
     s_pld.open = false;
-    s_eve_open = 0U;
+    s_eve.open = 0U;
+    s_csl.open = 0U;
     (void)f_mount(NULL, "0:", 0);
     s_mounted = 0U;
     s_collecting = 0U;
@@ -651,8 +683,12 @@ static bool pickSessionPath(void)
                    "%s/20%02u%02u%02u_%02u%02u%02u_PLD.edf",
                    s_dir_path, (unsigned)s_yy, (unsigned)s_mo, (unsigned)s_dd,
                    (unsigned)s_hh, (unsigned)s_mi, (unsigned)ss);
-    (void)snprintf(s_eve_path, sizeof(s_eve_path),
+    (void)snprintf(s_eve.path, sizeof(s_eve.path),
                    "%s/20%02u%02u%02u_%02u%02u%02u_EVE.edf",
+                   s_dir_path, (unsigned)s_yy, (unsigned)s_mo, (unsigned)s_dd,
+                   (unsigned)s_hh, (unsigned)s_mi, (unsigned)ss);
+    (void)snprintf(s_csl.path, sizeof(s_csl.path),
+                   "%s/20%02u%02u%02u_%02u%02u%02u_CSL.edf",
                    s_dir_path, (unsigned)s_yy, (unsigned)s_mo, (unsigned)s_dd,
                    (unsigned)s_hh, (unsigned)s_mi, (unsigned)ss);
     s_file_seq++;
@@ -731,10 +767,11 @@ static bool openSessionFile(void)
         }
     }
 
-    /* EVE (#59), best-effort like PLD. */
+    /* EVE (#59) and CSL (#32), best-effort like PLD. */
     s_eve_q_tail = s_eve_q_head;
     s_ticks = 0U;
-    eveOpen(patient, recording);
+    annOpen(&s_eve, patient, recording);
+    annOpen(&s_csl, patient, recording);
 
     g_session_edf_state = (uint8_t)SESSION_EDF_LOGGING;
     g_session_edf_error = 0U;
@@ -1151,7 +1188,17 @@ uint32_t SessionEdf_GetEveError(void)
 
 const char* SessionEdf_GetEvePath(void)
 {
-    return s_eve_path;
+    return s_eve.path;
+}
+
+uint32_t SessionEdf_GetCslRecords(void)
+{
+    return g_session_edf_csl_records;
+}
+
+uint32_t SessionEdf_GetCslError(void)
+{
+    return g_session_edf_csl_error;
 }
 
 uint32_t SessionEdf_GetFileSize(void)

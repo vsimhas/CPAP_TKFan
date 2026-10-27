@@ -812,6 +812,14 @@ void screenView::renderTherapyPage()
                        "FAULT: %s",
                        Therapy_GetFaultName());
     }
+    else if ((st == THERAPY_STATE_RAMP) && Therapy_GetRampAuto()
+             && (Therapy_GetAutoRampPhase() == 0U))
+    {
+        /* #38: AutoRamp holds the start pressure until sleep onset. */
+        (void)snprintf(buf, sizeof(buf),
+                       "AutoRamp: %.1f cmH2O, waiting for sleep",
+                       static_cast<double>(meas));
+    }
     else if (st == THERAPY_STATE_RAMP)
     {
         const uint32_t r = Therapy_GetRampRemainingSeconds();

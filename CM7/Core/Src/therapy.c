@@ -42,6 +42,15 @@ volatile float    g_therapy_target_cmh2o   = THERAPY_TARGET_DEFAULT;
 volatile float    g_therapy_apap_min_cmh2o = 5.0f;
 volatile float    g_therapy_apap_max_cmh2o = 20.0f;
 volatile uint8_t  g_therapy_ramp_minutes   = 0U;
+/* #38 AutoRamp: hold the start pressure until sleep onset (Apap_GetSleepOnset),
+ * then rise at autoramp_rate; the target is reached by autoramp_max_min after
+ * start whatever happens (ResMed: "no later than 30 minutes"). */
+volatile uint8_t  g_therapy_ramp_auto              = 0U;
+volatile float    g_therapy_autoramp_rate_cmh2o_min = 1.0f;
+volatile uint8_t  g_therapy_autoramp_max_min       = 30U;
+volatile uint8_t  g_therapy_autoramp_phase         = 0U;   /* 0 hold, 1 rising */
+volatile uint8_t  g_therapy_autoramp_cause         = 0U;   /* ApapOnset_t, 4 = time limit */
+volatile uint32_t g_therapy_autoramp_onset_s       = 0U;   /* start -> onset  */
 volatile uint8_t  g_therapy_mode           = (uint8_t)THERAPY_MODE_CPAP;
 
 /* Mask-off (high-leak / disconnect) during RAMP/RUNNING.
@@ -380,6 +389,7 @@ volatile float  g_therapy_session_p90   = 0.0f;
 volatile float  g_therapy_session_p95   = 0.0f;
 volatile uint32_t g_therapy_session_p_samples = 0U;
 volatile uint32_t g_therapy_ramp_elapsed_ms = 0U;
+static uint32_t   s_autoramp_rise_from_ms = 0U;   /* ramp_elapsed at onset */
 volatile uint32_t g_therapy_stop_elapsed_ms = 0U;
 
 volatile uint8_t  g_therapy_fault          = (uint8_t)THERAPY_FAULT_NONE;
@@ -1388,8 +1398,51 @@ static bool maskOffFlowOnlyClearCondition(void)
     return (q_abs < clear_slm);
 }
 
+static float autoRampSetpointCmh2o(void)
+{
+    if (g_therapy_autoramp_phase == 0U)
+    {
+        return THERAPY_RAMP_START_CMH2O;
+    }
+    const float rate = clampf(g_therapy_autoramp_rate_cmh2o_min, 0.2f, 10.0f);
+    const float sp = THERAPY_RAMP_START_CMH2O
+                   + (rate * (float)(g_therapy_ramp_elapsed_ms - s_autoramp_rise_from_ms)
+                      / 60000.0f);
+    return (sp < s_session_target_cmh2o) ? sp : s_session_target_cmh2o;
+}
+
+/* #38: hold until sleep onset, or until rising at the set rate only just
+ * reaches the target by the time limit. */
+static void autoRampStep(void)
+{
+    if (g_therapy_autoramp_phase != 0U)
+    {
+        return;
+    }
+    const float rate = clampf(g_therapy_autoramp_rate_cmh2o_min, 0.2f, 10.0f);
+    const float rise_ms = (s_session_target_cmh2o - THERAPY_RAMP_START_CMH2O)
+                        / rate * 60000.0f;
+    const uint32_t last_hold_ms = ((float)g_therapy_ramp_total_ms > rise_ms)
+                                ? (g_therapy_ramp_total_ms - (uint32_t)rise_ms) : 0U;
+    const ApapOnset_t onset = Apap_GetSleepOnset();
+    if ((onset != APAP_ONSET_NONE) || (g_therapy_ramp_elapsed_ms >= last_hold_ms))
+    {
+        g_therapy_autoramp_phase = 1U;
+        g_therapy_autoramp_cause = (onset != APAP_ONSET_NONE) ? (uint8_t)onset : 4U;
+        g_therapy_autoramp_onset_s = g_therapy_ramp_elapsed_ms / 1000U;
+        s_autoramp_rise_from_ms = g_therapy_ramp_elapsed_ms;
+        DBG_I("THR", "autoramp: onset %u at %lu s, rising %.1f cmH2O/min",
+                (unsigned)g_therapy_autoramp_cause,
+                (unsigned long)g_therapy_autoramp_onset_s, (double)rate);
+    }
+}
+
 static float currentRampSetpointCmh2o(void)
 {
+    if (g_therapy_ramp_auto != 0U)
+    {
+        return autoRampSetpointCmh2o();
+    }
     if (g_therapy_ramp_total_ms == 0U)
     {
         return s_session_target_cmh2o;
@@ -2152,6 +2205,12 @@ void Therapy_SetRampMinutes(uint8_t minutes)
 
 uint8_t Therapy_GetRampMinutes(void) { return g_therapy_ramp_minutes; }
 
+void Therapy_SetRampAuto(bool en)    { g_therapy_ramp_auto = en ? 1U : 0U; }
+bool Therapy_GetRampAuto(void)       { return (g_therapy_ramp_auto != 0U); }
+uint8_t Therapy_GetAutoRampPhase(void) { return g_therapy_autoramp_phase; }
+uint8_t Therapy_GetAutoRampCause(void) { return g_therapy_autoramp_cause; }
+uint32_t Therapy_GetAutoRampOnsetSeconds(void) { return g_therapy_autoramp_onset_s; }
+
 static void therapyNormalizeApapRange(void)
 {
     float min_p = clampf(g_therapy_apap_min_cmh2o,
@@ -2304,6 +2363,13 @@ uint32_t Therapy_GetSessionPressureSamples(void)
 uint32_t Therapy_GetRampRemainingSeconds(void)
 {
     if (g_therapy_state != (uint8_t)THERAPY_STATE_RAMP) return 0U;
+    if ((g_therapy_ramp_auto != 0U) && (g_therapy_autoramp_phase != 0U))
+    {
+        /* #38: rising - time left at the AutoRamp rate. */
+        const float rate = clampf(g_therapy_autoramp_rate_cmh2o_min, 0.2f, 10.0f);
+        const float left = s_session_target_cmh2o - autoRampSetpointCmh2o();
+        return (left > 0.0f) ? (uint32_t)(left / rate * 60.0f) : 0U;
+    }
     if (g_therapy_ramp_elapsed_ms >= g_therapy_ramp_total_ms) return 0U;
     return (g_therapy_ramp_total_ms - g_therapy_ramp_elapsed_ms) / 1000U;
 }
@@ -2445,6 +2511,16 @@ void Therapy_Start(void)
                             g_therapy_mode);
     }
     g_therapy_ramp_total_ms  = (uint32_t)g_therapy_ramp_minutes * 60U * 1000U;
+    g_therapy_autoramp_phase = 0U;
+    g_therapy_autoramp_cause = 0U;
+    g_therapy_autoramp_onset_s = 0U;
+    s_autoramp_rise_from_ms = 0U;
+    if ((g_therapy_ramp_auto != 0U) && (s_session_target_cmh2o > THERAPY_RAMP_START_CMH2O))
+    {
+        /* #38: ramp_total is the latest the target may be reached. */
+        g_therapy_ramp_total_ms = (uint32_t)clampf((float)g_therapy_autoramp_max_min,
+                                                   5.0f, 45.0f) * 60U * 1000U;
+    }
     g_therapy_ramp_elapsed_ms = 0U;
     g_therapy_stop_elapsed_ms = 0U;
     g_therapy_run_ms         = 0U;
@@ -2661,7 +2737,25 @@ void Therapy_Update(float dt_s)
         g_therapy_ramp_elapsed_ms += dt_ms;
         g_therapy_run_ms          += dt_ms;
 
-        if (g_therapy_ramp_elapsed_ms >= g_therapy_ramp_total_ms)
+        /* #38: detectors score through the ramp (target held - see
+         * Apap_Update); AutoRamp waits on their sleep-onset verdict. */
+        (void)Apap_Update(dt_s, g_therapy_state, s_mask_off_active);
+
+        if (g_therapy_ramp_auto != 0U)
+        {
+            autoRampStep();
+            const float sp = autoRampSetpointCmh2o();
+            if ((g_therapy_autoramp_phase != 0U) && (sp >= s_session_target_cmh2o))
+            {
+                applyTherapySetpoint(s_session_target_cmh2o, dt_s);
+                setState(THERAPY_STATE_RUNNING);
+            }
+            else
+            {
+                applyTherapySetpoint(sp, dt_s);
+            }
+        }
+        else if (g_therapy_ramp_elapsed_ms >= g_therapy_ramp_total_ms)
         {
             applyTherapySetpoint(s_session_target_cmh2o, dt_s);
             setState(THERAPY_STATE_RUNNING);

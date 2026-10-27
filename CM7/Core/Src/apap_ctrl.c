@@ -18,6 +18,7 @@
 #include "flow_sensor.h"
 #include "leak_estimator.h"
 #include "session_edf_log.h"
+#include "periodic_breath.h"
 #include "stm32h7xx_hal.h"
 
 #include <math.h>
@@ -228,6 +229,20 @@ volatile float   g_apap_snore_off_s                = 2.0f;
 volatile float   g_apap_snore_raise_scale          = 0.35f;
 volatile float   g_apap_snore_hp_hz                = 20.0f;  /* 2nd-order HP corner, 5..40 Hz */
 
+/* #38 AutoRamp sleep onset (ResMed's three signs): this many stable breaths
+ * in a row (period and peak each within tol of their running average), or
+ * this many obstructive apneas / hypopneas inside the window, or this many
+ * snore breaths in a row. Every hypopnea counts: the AirSense does not split
+ * hypopneas, and on the bench (4 cmH2O, 25 % jitter) our shape test called
+ * flattened ones central. Central apneas do not count - they are common in
+ * the wake-sleep transition itself. */
+volatile uint8_t g_apap_onset_breaths             = 30U;
+volatile float   g_apap_onset_period_tol          = 0.20f;
+volatile float   g_apap_onset_peak_tol            = 0.25f;
+volatile uint8_t g_apap_onset_events              = 3U;
+volatile float   g_apap_onset_event_window_s      = 120.0f;
+volatile uint8_t g_apap_onset_snore_breaths       = 5U;
+
 /* Down-titration + leak gate. */
 volatile uint8_t g_apap_lower_enable               = 1U;
 /* 23 Oct: lowering only began after 120 s with no FL / Hyp / snore, so in an
@@ -362,6 +377,15 @@ static uint32_t   s_sess_fl_n = 0U;
 static float      s_sess_fl_sum = 0.0f;
 static uint32_t   s_sess_fl_ms = 0U;
 static uint32_t   s_sess_snore_ms = 0U;
+/* #38: sleep-onset evidence. */
+#define ONSET_EV_N        8U
+static uint8_t    s_onset_cause = APAP_ONSET_NONE;
+static uint32_t   s_onset_stable_n = 0U;
+static uint32_t   s_onset_snore_n = 0U;
+static float      s_onset_period_ms = 0.0f;   /* running averages */
+static float      s_onset_peak_slm = 0.0f;
+static uint32_t   s_onset_ev_ms[ONSET_EV_N];  /* g_apap_therapy_ms of each */
+static uint32_t   s_onset_ev_n = 0U;
 static float      s_resume_ref_slm = 0.0f;    /* baseline held at episode start */
 /* R2: one long hypopnea is one event - re-arm only after a breath that is
  * no longer hypopnea-limited. */
@@ -709,10 +733,93 @@ static void releaseLeakFreeze(void)
     s_leak_freeze_ms = 0U;
 }
 
+/* #38: an obstructive apnea or any hypopnea was scored. */
+static void onsetNoteEvent(void)
+{
+    if (s_onset_cause != APAP_ONSET_NONE)
+    {
+        return;
+    }
+    s_onset_ev_ms[s_onset_ev_n % ONSET_EV_N] = g_apap_therapy_ms;
+    s_onset_ev_n++;
+    const uint32_t need = (g_apap_onset_events < 1U) ? 1U
+                        : ((g_apap_onset_events > ONSET_EV_N) ? ONSET_EV_N
+                                                              : g_apap_onset_events);
+    if (s_onset_ev_n < need)
+    {
+        return;
+    }
+    const uint32_t first = s_onset_ev_ms[(s_onset_ev_n - need) % ONSET_EV_N];
+    const uint32_t win_ms =
+        (uint32_t)(clampf(g_apap_onset_event_window_s, 10.0f, 600.0f) * 1000.0f);
+    if ((g_apap_therapy_ms - first) <= win_ms)
+    {
+        s_onset_cause = APAP_ONSET_EVENTS;
+    }
+}
+
+/* #38: one finished inspiration. Stable = period and peak each close to
+ * their running average; anything else - including a breath too small to
+ * score - starts the count again. */
+static void onsetNoteBreath(float peak_slm, uint32_t breath_ms, float min_peak)
+{
+    if (s_onset_cause != APAP_ONSET_NONE)
+    {
+        return;
+    }
+    s_onset_snore_n = s_snore_active ? (s_onset_snore_n + 1U) : 0U;
+    if (s_onset_snore_n >= (uint32_t)((g_apap_onset_snore_breaths < 1U)
+                                          ? 1U : g_apap_onset_snore_breaths))
+    {
+        s_onset_cause = APAP_ONSET_SNORE;
+        return;
+    }
+
+    if (!(peak_slm >= min_peak) || (breath_ms == 0U))
+    {
+        s_onset_stable_n = 0U;
+        return;
+    }
+    const float per = (float)breath_ms;
+    if (!(s_onset_period_ms > 0.0f))
+    {
+        s_onset_period_ms = per;
+        s_onset_peak_slm = peak_slm;
+        s_onset_stable_n = 0U;
+        return;
+    }
+    const float ptol = clampf(g_apap_onset_period_tol, 0.05f, 0.80f);
+    const float qtol = clampf(g_apap_onset_peak_tol, 0.05f, 0.80f);
+    const bool stable = (fabsf(per - s_onset_period_ms) <= (ptol * s_onset_period_ms))
+                     && (fabsf(peak_slm - s_onset_peak_slm) <= (qtol * s_onset_peak_slm));
+    s_onset_stable_n = stable ? (s_onset_stable_n + 1U) : 0U;
+    s_onset_period_ms += 0.2f * (per - s_onset_period_ms);
+    s_onset_peak_slm += 0.2f * (peak_slm - s_onset_peak_slm);
+    if (s_onset_stable_n >= (uint32_t)((g_apap_onset_breaths < 5U)
+                                           ? 5U : g_apap_onset_breaths))
+    {
+        s_onset_cause = APAP_ONSET_BREATHING;
+    }
+}
+
+static void onsetReset(void)
+{
+    s_onset_cause = APAP_ONSET_NONE;
+    s_onset_stable_n = 0U;
+    s_onset_snore_n = 0U;
+    s_onset_period_ms = 0.0f;
+    s_onset_peak_slm = 0.0f;
+    s_onset_ev_n = 0U;
+}
+
 static void evNoteApnea(SessionEdfEvent_t type)
 {
     s_ev_apnea_pending = true;
     s_ev_apnea_type = type;
+    if (type == SESSION_EVT_OBSTRUCTIVE_APNEA)
+    {
+        onsetNoteEvent();         /* #38 */
+    }
 }
 
 static void evFlushHold(void)
@@ -804,6 +911,8 @@ static void exitProbeToMonitor(void)
 
 static void resetBreathDetectors(void)
 {
+    s_onset_stable_n = 0U;        /* #38: an apnea is not stable breathing */
+    s_onset_snore_n = 0U;
     s_fl_prev_phase = EPR_PHASE_UNKNOWN;
     s_fl_insp_peak_q = 0.0f;
     s_fl_baseline_slm = 0.0f;
@@ -962,6 +1071,7 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         (uint32_t)(clampf(g_apap_hyp_min_duration_s, 5.0f, 60.0f) * 1000.0f);
 
     g_apap_fl_last_peak_slm = peak_slm;
+    onsetNoteBreath(peak_slm, approx_breath_ms, min_peak);   /* #38 */
 
     /* Independent flattening heuristic: insp mean/peak. Square/plateau
      * waveforms sit near 1; peaked breaths sit nearer 0.5. R13: over the
@@ -1078,6 +1188,7 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
                 s_hyp_need_recovery = true;   /* R2: no re-count until recovery */
                 g_apap_evt_hyp++;
                 evHypOpen(s_hyp_limited_ms);  /* #59 */
+                onsetNoteEvent();             /* #38 */
                 s_since_hyp_ms = 0U;          /* R8b */
                 if ((s_pending_ca_ms > 0U) && (g_apap_evt_ca > 0U))
                 {
@@ -1546,6 +1657,8 @@ bool Apap_IsResponseSoft(void)
 void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
 {
     const bool autoset = autosetMode(therapy_mode);
+    onsetReset();                 /* #38 */
+    PeriodicBreath_Reset();       /* #32 */
     if (!autoset && (g_apap_cpap_scoring_enable == 0U))
     {
         s_active = false;
@@ -1615,6 +1728,7 @@ void Apap_OnTherapyStart(float min_cmh2o, float max_cmh2o, uint8_t therapy_mode)
 
 void Apap_OnTherapyStop(void)
 {
+    PeriodicBreath_Interrupt();   /* #32: close an open CSR span first */
     evFlushAll();                 /* #59 */
     s_active = false;
     s_osa_treating = false;
@@ -1637,6 +1751,7 @@ void Apap_OnTherapyStop(void)
 
 void Apap_OnMaskReconnect(void)
 {
+    PeriodicBreath_Interrupt();   /* #32: no span across a mask-off gap */
     if (!s_active)
     {
         return;
@@ -1745,6 +1860,34 @@ float Apap_GetSnoreLevel(void)
     return clampf(g_apap_snore_rms_slm / thr, 0.0f, SNORE_LEVEL_MAX);
 }
 
+static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off);
+
+/* #38: the detectors also score through a ramp - AutoRamp needs them, and
+ * on the AirSense events in the ramp count too - but titration waits for
+ * the ramp to end, so the target is put back afterwards. */
+float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
+{
+    if (therapy_state == (uint8_t)THERAPY_STATE_RAMP)
+    {
+        const float keep = g_apap_target_cmh2o;
+        (void)apapUpdate(dt_s, (uint8_t)THERAPY_STATE_RUNNING, mask_off);
+        g_apap_target_cmh2o = keep;
+        g_apap_lowering = 0U;
+        return keep;
+    }
+    return apapUpdate(dt_s, therapy_state, mask_off);
+}
+
+ApapOnset_t Apap_GetSleepOnset(void)
+{
+    return (ApapOnset_t)s_onset_cause;
+}
+
+uint32_t Apap_GetOnsetStableBreaths(void)
+{
+    return s_onset_stable_n;
+}
+
 float Apap_GetSessionFlIndexAvg(void)
 {
     return (s_sess_fl_n > 0U) ? (s_sess_fl_sum / (float)s_sess_fl_n) : 0.0f;
@@ -1817,7 +1960,7 @@ float Apap_FilterBreathFlow(float q_slm, float dt_s)
     return q_slm;
 }
 
-float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
+static float apapUpdate(float dt_s, uint8_t therapy_state, bool mask_off)
 {
     if (!s_active
         || mask_off
@@ -1825,6 +1968,7 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
     {
         if (mask_off && s_active)
         {
+            PeriodicBreath_Interrupt();   /* #32 */
             disableOsc();
             s_osa_treating = false;
             g_apap_osa_treating = 0U;
@@ -1843,6 +1987,7 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
     if (s_fl_index_age_ms < FL_IDX_HOLD_MS) { s_fl_index_age_ms += dt_ms; }
     if (s_fl_active)    { s_sess_fl_ms += dt_ms; }      /* #61 */
     if (s_snore_active) { s_sess_snore_ms += dt_ms; }   /* #60 */
+    PeriodicBreath_Update(Flow_GetPatientSlm(), dt_ms);  /* #32 */
     s_pending_ca_ms = (s_pending_ca_ms > dt_ms) ? (s_pending_ca_ms - dt_ms) : 0U;
     if (s_ev_hold && (s_pending_ca_ms == 0U))
     {

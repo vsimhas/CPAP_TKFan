@@ -33,6 +33,7 @@
 #include "adherence.h"
 #include "fault_log.h"
 #include "watchdog.h"
+#include "periodic_breath.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -287,6 +288,15 @@ extern volatile float   g_apap_snore_on_s;
 extern volatile float   g_apap_snore_off_s;
 extern volatile float   g_apap_snore_raise_scale;
 extern volatile float   g_apap_snore_hp_hz;
+extern volatile uint8_t g_apap_onset_breaths;
+extern volatile float   g_apap_onset_period_tol;
+extern volatile float   g_apap_onset_peak_tol;
+extern volatile uint8_t g_apap_onset_events;
+extern volatile float   g_apap_onset_event_window_s;
+extern volatile uint8_t g_apap_onset_snore_breaths;
+extern volatile float   g_therapy_autoramp_rate_cmh2o_min;
+extern volatile uint8_t g_therapy_autoramp_max_min;
+extern volatile uint32_t g_therapy_ramp_elapsed_ms;
 extern volatile uint8_t g_apap_lower_enable;
 extern volatile float   g_apap_lower_rate_cmh2o_per_s;
 extern volatile float   g_apap_stable_before_lower_s;
@@ -1335,6 +1345,62 @@ static int Telem_SetApapFloatParam(const char *name, float value)
     g_apap_snore_hp_hz = value;
     return 1;
   }
+  /* #38 AutoRamp sleep onset / #32 periodic breathing. */
+  if (strcmp(name, "onset_breaths") == 0)
+  {
+    g_apap_onset_breaths = (uint8_t)((value < 5.0f) ? 5.0f : ((value > 100.0f) ? 100.0f : value));
+    return 1;
+  }
+  if (strcmp(name, "onset_period_tol") == 0)
+  {
+    g_apap_onset_period_tol = value;
+    return 1;
+  }
+  if (strcmp(name, "onset_peak_tol") == 0)
+  {
+    g_apap_onset_peak_tol = value;
+    return 1;
+  }
+  if (strcmp(name, "onset_events") == 0)
+  {
+    g_apap_onset_events = (uint8_t)((value < 1.0f) ? 1.0f : ((value > 8.0f) ? 8.0f : value));
+    return 1;
+  }
+  if (strcmp(name, "onset_event_window_s") == 0)
+  {
+    g_apap_onset_event_window_s = value;
+    return 1;
+  }
+  if (strcmp(name, "onset_snore_breaths") == 0)
+  {
+    g_apap_onset_snore_breaths = (uint8_t)((value < 1.0f) ? 1.0f : ((value > 50.0f) ? 50.0f : value));
+    return 1;
+  }
+  if (strcmp(name, "autoramp_rate") == 0)
+  {
+    g_therapy_autoramp_rate_cmh2o_min = value;
+    return 1;
+  }
+  if (strcmp(name, "autoramp_max_min") == 0)
+  {
+    g_therapy_autoramp_max_min = (uint8_t)((value < 5.0f) ? 5.0f : ((value > 45.0f) ? 45.0f : value));
+    return 1;
+  }
+  if (strcmp(name, "pb_enable") == 0)
+  {
+    g_pb_enable = (value != 0.0f) ? 1U : 0U;
+    return 1;
+  }
+  if (strcmp(name, "pb_depth") == 0)
+  {
+    g_pb_depth_min = value;
+    return 1;
+  }
+  if (strcmp(name, "pb_corr") == 0)
+  {
+    g_pb_corr_min = value;
+    return 1;
+  }
   if (strcmp(name, "lower_rate") == 0)
   {
     g_apap_lower_rate_cmh2o_per_s = value;
@@ -1784,13 +1850,14 @@ static void Telem_ProcessOneCommand(const char *cmd)
 
   if (strcmp(cmd, "therapy apap events") == 0)
   {
-    char line[352];
+    char line[416];
     int n = snprintf(line, sizeof(line),
                      "# APAP OA=%lu CA=%lu Hyp=%lu FL=%lu Snore=%lu "
                      "t_ms=%lu AHI=%.2f RDI=%.2f SI=%.2f "
                      "st=%s hyp=%u fl=%u sn=%u leak_blk=%u "
                      "pol=%d pol_ev=%.1f pol_bad=%u flat=%.2f dip=%.2f "
-                     "fli=%.2f snl=%.2f fli_avg=%.2f fli_p95=%.2f fl_s=%lu sn_s=%lu snr=%.3f\r\n",
+                     "fli=%.2f snl=%.2f fli_avg=%.2f fli_p95=%.2f fl_s=%lu sn_s=%lu snr=%.3f "
+                     "pb=%u pb_s=%lu pb_n=%lu pb_r=%.2f pb_d=%.2f pb_T=%.0f\r\n",
                      (unsigned long)Apap_GetEventOaCount(),
                      (unsigned long)Apap_GetEventCaCount(),
                      (unsigned long)Apap_GetEventHypCount(),
@@ -1820,7 +1887,14 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      (double)Apap_GetSessionFlIndexP95(),
                      (unsigned long)Apap_GetSessionFlSeconds(),
                      (unsigned long)Apap_GetSessionSnoreSeconds(),
-                     (double)Apap_GetSnoreRmsSlm());
+                     (double)Apap_GetSnoreRmsSlm(),
+                     /* #32: periodic breathing, and its last evaluation. */
+                     PeriodicBreath_IsActive() ? 1U : 0U,
+                     (unsigned long)PeriodicBreath_GetSessionSeconds(),
+                     (unsigned long)PeriodicBreath_GetEpisodes(),
+                     (double)PeriodicBreath_GetLastCorr(),
+                     (double)PeriodicBreath_GetLastDepth(),
+                     (double)PeriodicBreath_GetLastPeriodS());
     Telem_PushAck(cmd);
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
@@ -1840,7 +1914,7 @@ static void Telem_ProcessOneCommand(const char *cmd)
     int n = snprintf(line, sizeof(line),
                      "# EDF en=%u st=%s path=%s rec=%lu fsize=%lu err=0x%lX "
                      "pld=%s pldrec=%lu plderr=0x%lX "
-                     "eve=%s everec=%lu eveerr=0x%lX evedrop=%lu "
+                     "eve=%s everec=%lu eveerr=0x%lX evedrop=%lu csl=%lu cslerr=0x%lX "
                      "mounted=%u sd=%u test=%d fatfs=%u fail_step=%lu "
                      "sd_hal=0x%lX dio_err=0x%lX dio_n=%lu\r\n",
                      SessionEdf_IsEnabled() ? 1U : 0U,
@@ -1856,6 +1930,8 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      (unsigned long)SessionEdf_GetEveRecords(),
                      (unsigned long)SessionEdf_GetEveError(),
                      (unsigned long)g_session_edf_eve_dropped,
+                     (unsigned long)SessionEdf_GetCslRecords(),
+                     (unsigned long)SessionEdf_GetCslError(),
                      SessionEdf_IsMounted() ? 1U : 0U,
                      (unsigned)sd_card_present,
                      (int)sd_test_result,
@@ -2160,6 +2236,38 @@ static void Telem_ProcessOneCommand(const char *cmd)
     return;
   }
 
+  if (strcmp(cmd, "therapy set ramp auto") == 0)
+  {
+    Therapy_SetRampAuto(true);           /* #38 */
+    Telem_PushAck(cmd);
+    Telem_PushStatus();
+    return;
+  }
+
+  if (strcmp(cmd, "therapy ramp status") == 0)
+  {
+    char line[200];
+    int n = snprintf(line, sizeof(line),
+                     "# RAMP auto=%u min=%u st=%s elapsed_s=%lu phase=%u cause=%u "
+                     "onset_s=%lu stable=%lu sleep=%u sp=%.2f\r\n",
+                     Therapy_GetRampAuto() ? 1U : 0U,
+                     (unsigned)Therapy_GetRampMinutes(),
+                     Therapy_GetStateName(),
+                     (unsigned long)(g_therapy_ramp_elapsed_ms / 1000U),
+                     (unsigned)Therapy_GetAutoRampPhase(),
+                     (unsigned)Therapy_GetAutoRampCause(),
+                     (unsigned long)Therapy_GetAutoRampOnsetSeconds(),
+                     (unsigned long)Apap_GetOnsetStableBreaths(),
+                     (unsigned)Apap_GetSleepOnset(),
+                     (double)Therapy_GetSetpointCmh2o());
+    Telem_PushAck(cmd);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
+    return;
+  }
+
   if (strncmp(cmd, "therapy set ramp ", 17U) == 0)
   {
     long v;
@@ -2168,6 +2276,7 @@ static void Telem_ProcessOneCommand(const char *cmd)
       Telem_PushErr("ramp range 0..45");
       return;
     }
+    Therapy_SetRampAuto(false);
     Therapy_SetRampMinutes((uint8_t)v);
     Telem_PushAck(cmd);
     Telem_PushStatus();

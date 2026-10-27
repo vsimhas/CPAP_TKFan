@@ -11,6 +11,7 @@
 #include "therapy.h"
 #include "leak_estimator.h"
 #include "apap_ctrl.h"
+#include "periodic_breath.h"
 #include "adherence.h"
 #include "ff.h"
 #include "main.h"
@@ -26,7 +27,8 @@ static const char k_header[] =
     "p_avg,p_min,p_max,p50,p90,p95,"
     "leak_avg,leak_p50,leak_p95,leak_max,leak_high_s,leak_low_s,"
     "events_scored,oa,ca,hyp,fl,snore,ahi,rdi,si,edf,"
-    "fl_idx_avg,fl_idx_p95,fl_s,snore_s";
+    "fl_idx_avg,fl_idx_p95,fl_s,snore_s,"
+    "csr_s,csr_n,ramp_auto,onset_s,onset_cause";
 
 static RtcDateTime_t s_start;
 static bool          s_start_valid = false;
@@ -41,7 +43,8 @@ static float         s_apap_max = 0.0f;
 static uint8_t       s_epr_type = 0U;
 static uint8_t       s_epr_level = 0U;
 static uint8_t       s_ramp_min = 0U;
-static char          s_line[384];
+static uint8_t       s_ramp_auto = 0U;
+static char          s_line[448];
 static bool          s_has_last = false;
 static volatile bool s_pending = false;
 static uint32_t      s_written = 0U;
@@ -95,6 +98,7 @@ void SessionSummary_OnTherapyStart(void)
     s_epr_type = Therapy_GetEprType();
     s_epr_level = Therapy_GetEprLevel();
     s_ramp_min = Therapy_GetRampMinutes();
+    s_ramp_auto = Therapy_GetRampAuto() ? 1U : 0U;
 }
 
 void SessionSummary_OnTherapyStop(void)
@@ -132,7 +136,8 @@ void SessionSummary_OnTherapyStop(void)
         "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,"
         "%.1f,%.1f,%.1f,%.1f,%.0f,%.0f,"
         "%u,%lu,%lu,%lu,%lu,%lu,%.2f,%.2f,%.2f,%s,"
-        "%.2f,%.2f,%lu,%lu",
+        "%.2f,%.2f,%lu,%lu,"
+        "%lu,%lu,%u,%lu,%u",
         (unsigned)SESSION_SUMMARY_SCHEMA, t_start, t_end,
         (RtcClock_IsTimeValid() && s_start_valid) ? 1U : 0U,
         (unsigned long)run_s, (unsigned long)on_s, (unsigned long)off_s,
@@ -152,7 +157,12 @@ void SessionSummary_OnTherapyStop(void)
         (double)(scored ? Apap_GetSessionFlIndexAvg() : 0.0f),
         (double)(scored ? Apap_GetSessionFlIndexP95() : 0.0f),
         (unsigned long)(scored ? Apap_GetSessionFlSeconds() : 0U),
-        (unsigned long)(scored ? Apap_GetSessionSnoreSeconds() : 0U));
+        (unsigned long)(scored ? Apap_GetSessionSnoreSeconds() : 0U),
+        (unsigned long)(scored ? PeriodicBreath_GetSessionSeconds() : 0U),
+        (unsigned long)(scored ? PeriodicBreath_GetEpisodes() : 0U),
+        (unsigned)s_ramp_auto,
+        (unsigned long)((s_ramp_auto != 0U) ? Therapy_GetAutoRampOnsetSeconds() : 0U),
+        (unsigned)((s_ramp_auto != 0U) ? Therapy_GetAutoRampCause() : 0U));
     if ((n > 0) && ((size_t)n < sizeof(s_line)))
     {
         s_has_last = true;

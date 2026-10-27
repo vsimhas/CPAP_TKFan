@@ -9,11 +9,8 @@ namespace {
 
 Settings g_settings = {
     /* therapy_mode        */ TherapyMode::CPAP,
-    /* ramp                */ RampMode::OFF,    /* AirSense's "Auto" needs */
-                                                /* sleep-onset detection,  */
-                                                /* which we don't have yet */
-                                                /* - boot to OFF so therapy*/
-                                                /* hits target immediately.*/
+    /* ramp                */ RampMode::OFF,    /* Off by default; "Auto"  */
+                                                /* is AutoRamp (#38).      */
     /* epr                 */ OnOff::OFF,
     /* epr_type            */ EprType::FULL_TIME,
     /* epr_level           */ EprLevel::L1,

@@ -477,13 +477,13 @@ void MenuController::enterSelectedItem()
          * yank the running ramp). */
         const Settings& s = getSettings();
         syncTherapyFromSettings(s);
-        /* Map RampMode enum to minutes; OFF=0, AUTO=5, then 5..45 in 5-min
-         * steps. */
+        /* Map RampMode enum to minutes; OFF=0, then 5..45 in 5-min steps.
+         * AUTO is AutoRamp (#38): hold the start pressure until sleep onset. */
         uint8_t ramp_min = 0U;
         switch (s.ramp)
         {
         case RampMode::OFF:    ramp_min = 0U;  break;
-        case RampMode::AUTO:   ramp_min = 5U;  break;
+        case RampMode::AUTO:   ramp_min = 0U;  break;
         case RampMode::MIN_5:  ramp_min = 5U;  break;
         case RampMode::MIN_10: ramp_min = 10U; break;
         case RampMode::MIN_15: ramp_min = 15U; break;
@@ -496,6 +496,7 @@ void MenuController::enterSelectedItem()
         default:               ramp_min = 0U;  break;
         }
         Therapy_SetRampMinutes(ramp_min);
+        Therapy_SetRampAuto(s.ramp == RampMode::AUTO);
         Therapy_Start();
     }
 

@@ -8,6 +8,7 @@
  *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_BRP.edf   25 Hz waveforms
  *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_PLD.edf    1 Hz summary
  *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_EVE.edf    scored events (EDF+)
+ *      0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_CSL.edf    periodic breathing (EDF+)
  *
  *  BRP (1 s records @ 25 Hz): Flow.40ms (L/s), Press.40ms (cmH2O).
  *  PLD (1 s records @ 1 Hz):  MaskPress.2s, Press.2s, Leak.2s.
@@ -84,6 +85,8 @@ typedef enum
     SESSION_EVT_OBSTRUCTIVE_APNEA = 0,
     SESSION_EVT_CENTRAL_APNEA,
     SESSION_EVT_HYPOPNEA,
+    SESSION_EVT_CSR_START,          /* #32: these two go to the CSL file, */
+    SESSION_EVT_CSR_END,            /* stamped at their own onset, dur 0  */
     SESSION_EVT_COUNT
 } SessionEdfEvent_t;
 
@@ -97,6 +100,10 @@ void              SessionEdf_LogEvent(SessionEdfEvent_t type, uint32_t end_ticks
 uint32_t          SessionEdf_GetEveRecords(void);
 uint32_t          SessionEdf_GetEveError(void);
 const char*       SessionEdf_GetEvePath(void);
+/* CSL companion (#32): periodic-breathing spans as "CSR Start" / "CSR End"
+ * annotations, YYYYMMDD_HHMMSS_CSL.edf. Error encoding as EVE with 0x6Sxx. */
+uint32_t          SessionEdf_GetCslRecords(void);
+uint32_t          SessionEdf_GetCslError(void);
 
 /* Mount/unmount helpers (also used by USB status). */
 bool SessionEdf_Mount(void);

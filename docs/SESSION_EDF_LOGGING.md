@@ -12,6 +12,7 @@ serial):
 0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_BRP.edf   25 Hz waveforms
 0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_PLD.edf    1 Hz summary channels
 0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_EVE.edf    scored events (EDF+ annotations)
+0:/DATALOG/YYYYMMDD/YYYYMMDD_HHMMSS_CSL.edf    periodic breathing spans (EDF+ annotations)
 ```
 
 The date and time come from the RTC (see Setup). Each therapy start makes a new
@@ -22,6 +23,7 @@ set; a second session in the same second bumps the seconds field.
 | BRP | 1 s @ 25 Hz | `Flow.40ms` (L/s), `Press.40ms` (cmH2O) |
 | PLD | 1 s @ 1 Hz | `MaskPress.2s`, `Press.2s` (target), `Leak.2s` (L/s), `Snore.2s`, `FlowLim.2s` |
 | EVE | EDF+D, 64-byte records | `EDF Annotations` + `Crc16` |
+| CSL | EDF+D, 64-byte records | `EDF Annotations` + `Crc16` |
 
 **EVE** (checklist #59) follows the AirSense 11's own file byte for byte: the
 first record is `Recording starts`, then one record per scored event,
@@ -32,6 +34,23 @@ stamped at its **end** (seconds from the file start) and carries its duration:
 - a central apnea that may still be re-scored as a hypopnea (R4, 30 s window) is
   held until that window closes, and dropped if re-scored;
 - a hypopnea is written when breathing recovers.
+
+**CSL** (checklist #32) has the same layout as EVE, again matching the AirSense 11's
+own CSL file. After `Recording starts` it holds periodic-breathing spans as a pair of
+records, `CSR Start` and `CSR End`, each stamped at its own time with duration 0;
+OSCAR reads each pair as one Cheyne-Stokes span (its CSR graph and CSR %).
+
+The detector (`periodic_breath.c`) runs with the event detectors, scoring only:
+|patient flow| through two 2 s low-passes gives a ventilation envelope, sampled at
+1 Hz into a 240 s window. Every 5 s the window is periodic when the envelope's
+std / mean is >= 0.30 (`apap set pb_depth`) and its normalised autocorrelation
+has a peak >= 0.40 (`pb_corr`) at a 30-100 s lag, with <= -0.20 at half that lag
+(a cycle, not a drift or a step). Two periodic windows start a span, three
+non-periodic ones end it. The span is moved back 180 s at the start and 60 s at the
+end for the detection lag (bench, simulator CSR 311-800 s: flagged 515-866 s, logged
+as 330-796 s with these corrections). Spans under 60 s are not logged. Mask-off or therapy stop ends an
+open span. It cannot tell Cheyne-Stokes from cyclic obstructive events of the
+same period - those are scored as OA / H as well.
 
 Flow limitation and snore have no EVE entry in OSCAR's loader. As on the AirSense,
 they are continuous indices in PLD (#60 / #61), which OSCAR plots as its Snore and
@@ -90,10 +109,12 @@ schema version: columns are only ever added at the end, with the version bumped.
 | `edf` | the session's DATALOG name, e.g. `20261026_140818` |
 | `fl_idx_avg`, `fl_idx_p95` | flow-limitation index (`FlowLim.2s` scale), mean and P95 over the session's breaths (schema 2) |
 | `fl_s`, `snore_s` | seconds with the FL flag / snore detector on (schema 2) |
+| `csr_s`, `csr_n` | periodic breathing: seconds in logged spans and their number (schema 3, #32) |
+| `ramp_auto`, `onset_s`, `onset_cause` | AutoRamp (#38): 1 if used, seconds from start to sleep onset, and why - 1 stable breathing, 2 apneas / hypopneas, 3 snore, 4 time limit (schema 3) |
 
-Schema 2 (#60 / #61) added the last four columns. When a card already holds a schema-1
-file, a `# schema 2` comment and the new header line are appended before the next
-record. Readers (`adherence.c`, `adherence_check.py`) re-map the columns at every
+Schema 2 (#60 / #61) added `fl_idx_avg` .. `snore_s`, schema 3 (#32 / #38) the last
+five. When a card already holds an older file, a `# schema N` comment and the new
+header line are appended before the next record. Readers (`adherence.c`, `adherence_check.py`) re-map the columns at every
 header line.
 
 The record is snapshotted in RAM at stop and written to the card. The card is mounted

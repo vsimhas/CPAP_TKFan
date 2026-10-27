@@ -27,7 +27,7 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-#define SESSION_SUMMARY_SCHEMA  2U
+#define SESSION_SUMMARY_SCHEMA  3U
 
 void        SessionSummary_OnTherapyStart(void);
 /* Call at Therapy_Stop after the session statistics have been refreshed. */

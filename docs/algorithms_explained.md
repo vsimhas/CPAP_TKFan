@@ -533,6 +533,17 @@ IDLE -> RAMP -> RUNNING -> STOPPING -> IDLE
 - **RAMP** (optional, 0–45 minutes): start at 4 cmH₂O and climb linearly to the
   session target, so the patient can fall asleep at a low pressure. The climb
   is so slow (~0.01 cmH₂O/s) that the PID's own slew limiter never notices it.
+  **AutoRamp** (#38, `therapy set ramp auto`, GUI ramp "Auto") instead holds
+  4 cmH₂O until sleep onset and then climbs at 1 cmH₂O/min
+  (`apap set autoramp_rate`). Onset is ResMed's three signs: 30 stable breaths
+  in a row (period within ±20 % and peak within ±25 % of their running
+  averages), 3 obstructive apneas or hypopneas within 2 min, or 5 snore breaths
+  in a row. Whatever happens, the climb starts early enough to reach the target
+  30 min after start (`autoramp_max_min`). `therapy ramp status` shows the
+  phase, the cause and the stable-breath count.
+  During any ramp the APAP detectors score (events in the ramp count, as on the
+  AirSense) but titration is frozen: the APAP target is put back every tick, so
+  AutoSet starts from its minimum when the ramp ends.
 - **RUNNING**: hold the target. In CPAP that is a fixed number; in Autoset the
   APAP algorithm moves it.
 - **STOPPING**: a two-second spin-down.

@@ -112,6 +112,19 @@ float      Apap_GetSessionFlIndexP95(void);
 uint32_t   Apap_GetSessionFlSeconds(void);    /* time flow-limited (FL flag) */
 uint32_t   Apap_GetSessionSnoreSeconds(void); /* time snoring */
 
+/* #38 AutoRamp: sleep onset as the AirSense defines it. Latched from
+ * Apap_OnTherapyStart until the next start; the detectors also run (score
+ * only) while therapy is in RAMP. */
+typedef enum
+{
+    APAP_ONSET_NONE = 0,
+    APAP_ONSET_BREATHING,         /* g_apap_onset_breaths stable breaths */
+    APAP_ONSET_EVENTS,            /* obstructive apneas / any hypopneas  */
+    APAP_ONSET_SNORE              /* snore breaths in a row              */
+} ApapOnset_t;
+ApapOnset_t Apap_GetSleepOnset(void);
+uint32_t   Apap_GetOnsetStableBreaths(void);  /* current run */
+
 #ifdef __cplusplus
 }
 #endif
