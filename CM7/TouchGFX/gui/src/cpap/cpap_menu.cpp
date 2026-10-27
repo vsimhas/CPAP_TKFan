@@ -5,6 +5,7 @@
 #include <gui/cpap/cpap_settings.hpp>
 
 #include "therapy.h"   /* C therapy state machine; called on START/STOP    */
+#include "circuit_learn.h" /* #85: MORE > Learn Tube                         */
 
 #include <stdio.h>
 
@@ -59,6 +60,7 @@ const ListItem k_my_options_items[] = {
 const ListItem k_more_items[] = {
     { "<- Back",           Page::HOME,                Mode::LIST },
     { "Mask Fit",          Page::MASK_FIT,            Mode::INFO },
+    { "Learn Tube",        Page::LEARN_TUBE,          Mode::INFO },
     { "Airplane Mode",     Page::VALUE_AIRPLANE_MODE, Mode::VALUE_EDIT },
     { "myAir / Bluetooth", Page::MYAIR,               Mode::INFO },
     { "Diagnostics",       Page::DIAGNOSTICS,         Mode::INFO },
@@ -119,6 +121,7 @@ Page parentList(Page p)
         return Page::MY_OPTIONS;
     case Page::VALUE_AIRPLANE_MODE:
     case Page::MASK_FIT:
+    case Page::LEARN_TUBE:
     case Page::MYAIR:
     case Page::DIAGNOSTICS:
         return Page::MORE;
@@ -154,6 +157,9 @@ MenuController g_menu;
 /* Static buffer used to format dynamic editor value strings (e.g.
  * "27 C" for the tube-temp page). Returned by editorValueText(). */
 char g_editor_value_buf[24] = {0};
+/* LEARN_TUBE page (#85): centre line (16-char widget) and hint (40). */
+char g_learn_buf[16] = {0};
+char g_learn_hint_buf[40] = {0};
 
 static void syncEprToTherapy(const Settings& s)
 {
@@ -390,6 +396,20 @@ void MenuController::onRotaryDelta(int delta)
         return;
     }
 
+    /* LEARN_TUBE: rotate between Start (0) and Back (1) until a run has
+     * been started from this visit (2). */
+    if ((current_page_ == Page::LEARN_TUBE) && (selected_index_ < 2U)
+        && !CircuitLearn_IsBusy())
+    {
+        const uint8_t sel = (delta > 0) ? 1U : 0U;
+        if (sel != selected_index_)
+        {
+            selected_index_ = sel;
+            needs_redraw_ = true;
+        }
+        return;
+    }
+
     /* INFO mode: rotation is a no-op except on THERAPY where the wave
      * animation auto-advances regardless. */
 }
@@ -408,6 +428,23 @@ void MenuController::onButtonPress()
             therapy_running_ = false;
             Therapy_Stop();
             goBack();
+        }
+        else if (current_page_ == Page::LEARN_TUBE)
+        {
+            if (CircuitLearn_IsBusy())
+            {
+                CircuitLearn_Abort();
+            }
+            else if (selected_index_ == 0U)
+            {
+                (void)CircuitLearn_Start();   /* a refusal shows as the result */
+                selected_index_ = 2U;
+            }
+            else
+            {
+                goBack();
+            }
+            needs_redraw_ = true;
         }
         else
         {
@@ -568,11 +605,36 @@ const char* MenuController::editorTitle() const
     case Page::MY_SLEEP_VIEW:        return "My Sleep View";
     case Page::MORE:                 return "More";
     case Page::MASK_FIT:             return "Mask Fit";
+    case Page::LEARN_TUBE:           return "Learn Tube";
     case Page::MYAIR:                return "myAir";
     case Page::DIAGNOSTICS:          return "Diagnostics";
     case Page::THERAPY:              return "Therapy";
     default:                         return "";
     }
+}
+
+const char* MenuController::learnTubeText() const
+{
+    switch (CircuitLearn_GetPhase())
+    {
+    case CL_PHASE_WAIT:
+    case CL_PHASE_ZERO:
+        return "Starting...";
+    case CL_PHASE_STEP:
+        (void)snprintf(g_learn_buf, sizeof(g_learn_buf), "Learning %u/%u",
+                       static_cast<unsigned>(CircuitLearn_GetStep() + 1U),
+                       static_cast<unsigned>(CircuitLearn_GetStepCount()));
+        return g_learn_buf;
+    case CL_PHASE_RAMPDOWN:
+        return "Slowing down";
+    default:
+        break;
+    }
+    if (selected_index_ < 2U)
+    {
+        return "Learn Tube";
+    }
+    return (CircuitLearn_GetResult()->fail == CL_OK) ? "Tube learned" : "Not learned";
 }
 
 const char* MenuController::editorValueText() const
@@ -661,6 +723,35 @@ const char* MenuController::editorHint() const
         return "Click to return";
     case Page::MASK_FIT:
         return "Hold mask in place. Click to exit.";
+    case Page::LEARN_TUBE:
+    {
+        if (CircuitLearn_IsBusy())
+        {
+            return "Keep tube end open. Click: stop";
+        }
+        if (selected_index_ == 0U)
+        {
+            return "Mask off tube end  >Start<  Back";
+        }
+        if (selected_index_ == 1U)
+        {
+            return "Mask off tube end   Start  >Back<";
+        }
+        const CircuitLearnResult_t* r = CircuitLearn_GetResult();
+        if (r->fail == CL_OK)
+        {
+            (void)snprintf(g_learn_hint_buf, sizeof(g_learn_hint_buf),
+                           "%.2f cmH2O at 60 L/min%s",
+                           static_cast<double>(r->d60),
+                           ((r->warn & CL_WARN_DIFFERS) != 0U) ? ", new tube" : "");
+        }
+        else
+        {
+            (void)snprintf(g_learn_hint_buf, sizeof(g_learn_hint_buf),
+                           "%s. Click: back", CircuitLearn_FailName(r->fail));
+        }
+        return g_learn_hint_buf;
+    }
     case Page::MYAIR:
         return "Pairing not active. Click to exit.";
     case Page::DIAGNOSTICS:

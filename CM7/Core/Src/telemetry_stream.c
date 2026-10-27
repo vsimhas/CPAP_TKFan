@@ -35,6 +35,7 @@
 #include "watchdog.h"
 #include "periodic_breath.h"
 #include "precheck.h"
+#include "circuit_learn.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -468,6 +469,44 @@ static void Telem_PushPrecheck(void)
   if ((n > 0) && ((size_t)n < sizeof(line)))
   {
     Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+  }
+}
+
+/* #85: learn-circuit state, result and the points behind it. */
+static void Telem_PushCircuit(void)
+{
+  const CircuitLearnResult_t *r = CircuitLearn_GetResult();
+  char line[320];
+  int n = snprintf(line, sizeof(line),
+                   "# CIRCUIT ph=%s step=%u/%u res=%s warn=0x%02X applied=%u n=%u "
+                   "r_lam=%.5f r_turb=%.6f d60=%.3f d100=%.3f rms=%.3f prev_d60=%.3f "
+                   "p0=%.3f q0=%.2f stop=%s use=%s use_lam=%.5f use_turb=%.6f "
+                   "apply=%u rpm_max=%ld csv=%lu csverr=0x%04lX\r\n",
+                   CircuitLearn_PhaseName(CircuitLearn_GetPhase()),
+                   (unsigned)CircuitLearn_GetStep(), (unsigned)CircuitLearn_GetStepCount(),
+                   CircuitLearn_FailToken(r->fail), (unsigned)r->warn,
+                   r->applied ? 1U : 0U, (unsigned)r->n, (double)r->r_lam,
+                   (double)r->r_turb, (double)r->d60, (double)r->d100, (double)r->rms,
+                   (double)r->prev_d60, (double)r->p0, (double)r->q0,
+                   (r->stop_why[0] != '\0') ? r->stop_why : "-",
+                   CircuitLearn_GetSourceName(), (double)TubeComp_GetRLam(),
+                   (double)TubeComp_GetRTurb(), (unsigned)g_circuit_learn_apply,
+                   (long)g_circuit_learn_rpm_max, (unsigned long)CircuitLearn_GetCsvRows(),
+                   (unsigned long)CircuitLearn_GetCsvError());
+  if ((n > 0) && ((size_t)n < sizeof(line)))
+  {
+    Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+  }
+  for (uint8_t i = 0U; i < r->n; i++)
+  {
+    n = snprintf(line, sizeof(line), "# CIRCUIT pt=%u rpm=%.0f q=%.2f p=%.3f fit=%.3f amps=%.2f\r\n",
+                 (unsigned)i, (double)r->pt[i].rpm, (double)r->pt[i].q, (double)r->pt[i].p,
+                 (double)((r->r_lam * r->pt[i].q) + (r->r_turb * r->pt[i].q * r->pt[i].q)),
+                 (double)r->pt[i].supply_a);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
   }
 }
 
@@ -1921,6 +1960,73 @@ static void Telem_ProcessOneCommand(const char *cmd)
       return;
     }
     g_precheck_enable = (uint8_t)v;
+    Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #85: learn circuit (tube end open). */
+  if (strcmp(cmd, "circuit learn") == 0)
+  {
+    const CircuitLearnFail_t f = CircuitLearn_Start();
+    if (f != CL_OK)
+    {
+      char e[64];
+      (void)snprintf(e, sizeof(e), "circuit learn refused: %s", CircuitLearn_FailToken(f));
+      Telem_PushErr(e);
+      Telem_PushCircuit();
+      return;
+    }
+    Telem_PushAck(cmd);
+    return;
+  }
+  if (strcmp(cmd, "circuit status") == 0)
+  {
+    Telem_PushAck(cmd);
+    Telem_PushCircuit();
+    return;
+  }
+  if (strcmp(cmd, "circuit abort") == 0)
+  {
+    CircuitLearn_Abort();
+    Telem_PushAck(cmd);
+    return;
+  }
+  if (strcmp(cmd, "circuit reset") == 0)
+  {
+    if (CircuitLearn_IsBusy())
+    {
+      Telem_PushErr("circuit reset: learn running");
+      return;
+    }
+    CircuitLearn_ResetToDefault();
+    Telem_PushAck(cmd);
+    Telem_PushCircuit();
+    return;
+  }
+  if ((strncmp(cmd, "circuit apply ", 14U) == 0)
+      || (strncmp(cmd, "circuit restore ", 16U) == 0))
+  {
+    const bool apply = (cmd[8] == 'a');
+    long v = 0;
+    if (!Telem_ParseLong(&cmd[apply ? 14 : 16], &v) || ((v != 0) && (v != 1)))
+    {
+      Telem_PushErr("circuit apply|restore 0|1");
+      return;
+    }
+    if (apply) { g_circuit_learn_apply = (uint8_t)v; }
+    else       { g_circuit_learn_restore = (uint8_t)v; }
+    Telem_PushAck(cmd);
+    return;
+  }
+  if (strncmp(cmd, "circuit rpm_max ", 16U) == 0)
+  {
+    long v = 0;
+    if (!Telem_ParseLong(&cmd[16], &v) || (v < 16000) || (v > 26000))
+    {
+      Telem_PushErr("circuit rpm_max 16000..26000");
+      return;
+    }
+    g_circuit_learn_rpm_max = (int32_t)v;
     Telem_PushAck(cmd);
     return;
   }

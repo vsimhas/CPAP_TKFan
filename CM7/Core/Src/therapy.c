@@ -23,6 +23,7 @@
 #include "telemetry_stream.h"   /* Telem_PushMaskOff - see enterMaskOff() */
 #include "dbg_log.h"
 #include "precheck.h"
+#include "circuit_learn.h"
 #include "stm32h7xx_hal.h"
 
 #include <math.h>
@@ -2512,6 +2513,13 @@ void Therapy_ForceMaskOn(void)
 
 void Therapy_Start(void)
 {
+    /* #85: the learn-circuit run owns the blower until it has stopped. */
+    if (CircuitLearn_IsBusy())
+    {
+        DBG_I("THR", "start refused: learn circuit running");
+        return;
+    }
+
     /* A pending FAULT must be cleared before we'll re-arm the blower. */
     if (g_therapy_fault != (uint8_t)THERAPY_FAULT_NONE)
     {

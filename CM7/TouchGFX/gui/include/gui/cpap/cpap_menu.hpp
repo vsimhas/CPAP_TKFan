@@ -47,6 +47,7 @@ enum class Page : uint8_t
     MYAIR,               /* informational                                     */
     DIAGNOSTICS,         /* live peripheral test results + sensor readings    */
     THERAPY,             /* dynamic pulse + summary                           */
+    LEARN_TUBE,          /* #85: learn circuit, tube end open                 */
     NUM_PAGES
 };
 
@@ -87,6 +88,9 @@ public:
 
     /* For list rows that display a current setting value on the right. */
     const char* itemValue(uint8_t idx) const;
+
+    /* LEARN_TUBE page (#85): the centre line. editorHint() has the rest. */
+    const char* learnTubeText() const;
 
     /* For the value-editor pages, the big text shown in the centre. */
     const char* editorValueText() const;

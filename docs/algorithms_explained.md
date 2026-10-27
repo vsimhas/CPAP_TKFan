@@ -192,11 +192,56 @@ sensor. That means the thing being held constant is what the patient
 experiences, which is the point of the whole device. It also means the
 controller is trusting a model. If `R_lam`/`R_turb` are wrong for your hose, the
 loop will hold the wrong pressure, confidently. Typical values for a 15 mm
-slimline hose are around `R_lam = 0.002`, `R_turb = 0.00018`; the header has a
-calibration procedure that needs only the device and a plug.
+slimline hose are around `R_lam = 0.002`, `R_turb = 0.00018`; the built-in pair
+(0.00353 / 0.000118) was fitted for the bench hose, but only from 16 to 54 L/min.
 
 Turning tube compensation off makes the estimate equal the raw sensor reading,
 and the loop then regulates device-side pressure.
+
+### 5.1 Learn circuit: measuring the attached tube (checklist #85)
+
+`circuit_learn.c` — **MORE > Learn Tube**, or `circuit learn` over USB.
+
+The user takes the mask off the tube, so its end is open to the room. The
+pressure there is then atmospheric, and the device sensor reads the tube's drop
+directly — no external reference, and (unlike a vent) nothing ties flow to
+pressure. The run:
+
+1. blower at rest for 1 s: sensor zero and flow zero;
+2. open-loop speed steps 12000, 15500, 19000, 22500, 26000 rpm, each held 0.8 s
+   at speed and then averaged for 1 s;
+3. a controlled ramp-down to 12000 rpm, then stop;
+4. a least-squares fit of `drop = R_lam × Q + R_turb × Q²` (both ≥ 0).
+
+**Is the end open?** After the first step, the pressure must be under 60 % of
+the fan's shut-off pressure at that speed *and* under 0.0015 × Q² (a map-free
+test, needed where the fan map isn't the blower's), with at least 20 L/min. On
+the bench at 12 krpm an open tube gave P/Q² = 0.00022 and the connected circuit
+(vent + lung) 0.0033. A refused run stops at about 3 cmH2O and changes nothing.
+
+**Is the result believable?** At least 3 steps, the top one over 50 L/min, fit
+rms under max(0.10, 5 % of the largest drop), and at most 3 cmH2O at 60 L/min
+(over that is a kinked or blocked tube, or an accessory the compensation should
+not quietly absorb). The climb stops early at 10 cmH2O, 140 L/min, a saturated
+flow sensor, or 0.8 A of supply current. A good result replaces
+`R_lam`/`R_turb`; *new tube* is flagged when it moves the drop at 60 L/min by
+more than max(0.15 cmH2O, 30 %).
+
+**Persistence.** Every run is a row in `0:/CIRCUIT.CSV`; at boot, and when a
+card goes in while therapy is idle, the last applied row is loaded back.
+`circuit reset` returns to the built-in pair (and logs that, so it sticks).
+
+Bench, 2026-10-27 (tube opened just after the vent): R_lam 0, R_turb 0.000209,
+0.75 cmH2O at 60 L/min (built-in 0.64), rms 0.034 over 60–145 L/min. Breathing
+at 12 cmH2O against the external sensor at the lung, the estimate's error in the
+25–45 L/min inspiratory band went from +0.24 (built-in) to +0.11 cmH2O, the same
+as at low flow — the remaining +0.1 is the known sensor-to-sensor offset.
+Opened at the lung instead, with the external sensor's body still on the end,
+it measured 3.4 cmH2O at 60 L/min and refused (*resistance too high*).
+
+Compliance is not measured: the tube's ~1 mL/cmH2O is under 10 mL over a
+10 cmH2O step, about what the flow element's zero error integrates to in a
+second.
 
 ---
 
@@ -855,6 +900,7 @@ two to three times more Kp and Ki.
 |---|---|
 | Pressure PID and feed-forward | `CM7/Core/Src/blower_ctrl.c` |
 | Mask pressure estimate | `CM7/Core/Src/tube_comp.c` |
+| Learn circuit (tube resistance) | `CM7/Core/Src/circuit_learn.c` |
 | Flow conditioning | `CM7/Core/Src/flow_sensor.c` |
 | Leak estimation | `CM7/Core/Src/leak_estimator.c`, `leak_estimator_vivo.c` |
 | Therapy states, mask-off | `CM7/Core/Src/therapy.c` |

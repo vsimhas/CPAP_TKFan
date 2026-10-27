@@ -78,6 +78,10 @@ bool  TubeComp_IsEnabled(void);
 void  TubeComp_SetCoefficients(float R_lam, float R_turb);
 float TubeComp_GetRLam(void);
 float TubeComp_GetRTurb(void);
+/* The built-in pair (bench hose, 2026-09-22); circuit_learn.c can replace
+ * it with the attached tube's (#85). */
+float TubeComp_GetDefaultRLam(void);
+float TubeComp_GetDefaultRTurb(void);
 
 /* Per-tick API: feed in the sensor pressure (cmH2O) and current flow
  * (slm; equivalent to L/min in CPAP context), receive the mask-pressure

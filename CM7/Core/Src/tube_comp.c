@@ -186,6 +186,8 @@ void  TubeComp_SetInertanceDeadband(float db_slm_per_s)
     if (db_slm_per_s > 300.0f)   db_slm_per_s = 300.0f;
     g_tubecomp_L_dqdt_db_slm_per_s = db_slm_per_s;
 }
+float TubeComp_GetDefaultRLam(void)      { return TUBECOMP_R_LAM_DEFAULT; }
+float TubeComp_GetDefaultRTurb(void)     { return TUBECOMP_R_TURB_DEFAULT; }
 float TubeComp_GetRLam(void)             { return g_tubecomp_R_lam_cmh2o_per_lpm; }
 float TubeComp_GetRTurb(void)            { return g_tubecomp_R_turb_cmh2o_per_lpm2; }
 float TubeComp_GetLastSensorCmh2o(void)  { return g_tubecomp_p_sensor_cmh2o; }

@@ -177,6 +177,18 @@ The last 16 records stay in RAM; `faults` prints the count, how many are still w
 for the card (`pending`) and the 8 most recent (`# FLT ...`, newest first). Records made
 while no card is in are written at the next mount.
 
+## Circuit log: `0:/CIRCUIT.CSV` (checklist #85)
+
+One row per learn-circuit run (MORE > Learn Tube, `circuit learn`) and per
+`circuit reset`. Columns: `schema, time, rtc_valid, uptime_s, event (learn |
+reset), result (ok, not_open, high, ...), warn, applied, r_lam, r_turb, d60,
+d100, rms, n, p0, q0, prev_d60, rpm_max, stop, points` - `points` is
+`rpm/flow/drop` per step, `;`-separated.
+
+At boot, and whenever a card is inserted while therapy is idle, the last row with
+`applied = 1` is loaded into tube compensation (`circuit status` then shows
+`use=card`). `circuit restore 0` skips that.
+
 ## OSCAR
 
 Copy the card (or its `DATALOG`, `STR.edf`, `Identification.json`) and import it in

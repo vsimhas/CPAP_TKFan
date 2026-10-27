@@ -390,6 +390,13 @@ void screenView::handleTickEvent()
         {
             renderTherapyPage();
         }
+        else if (cpap::getMenu().page() == cpap::Page::LEARN_TUBE)
+        {
+            /* #85: step / result of the learn-circuit run. */
+            renderInfoPage();
+            welcome_big_text_.invalidate();
+            welcome_sub_text_.invalidate();
+        }
     }
 
     if (cpap::getMenu().needsRedraw())
@@ -652,6 +659,7 @@ void screenView::renderCurrentPage()
         break;
     case Page::MY_SLEEP_VIEW:
     case Page::MASK_FIT:
+    case Page::LEARN_TUBE:
     case Page::MYAIR:
         renderInfoPage();
         break;
@@ -764,6 +772,7 @@ void screenView::renderInfoPage()
     {
     case Page::MY_SLEEP_VIEW: big = "Sleep view (placeholder)"; break;
     case Page::MASK_FIT:      big = "Mask Fit check";           break;
+    case Page::LEARN_TUBE:    big = m.learnTubeText();          break;
     case Page::MYAIR:         big = "myAir / Bluetooth";        break;
     default:                  big = "";                         break;
     }
