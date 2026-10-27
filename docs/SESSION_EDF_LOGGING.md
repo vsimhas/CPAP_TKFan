@@ -189,6 +189,19 @@ At boot, and whenever a card is inserted while therapy is idle, the last row wit
 `applied = 1` is loaded into tube compensation (`circuit status` then shows
 `use=card`). `circuit restore 0` skips that.
 
+## Calibration log: `0:/CAL.CSV` (checklist #84)
+
+One row per calibration change, applied or refused: the learned device-pressure
+zero (when it moves by 0.05 cmH2O or more), the learned flow zero (0.002 mbar or
+more), `cal ps gain`, `cal as offset`, `cal reset`. Columns: `schema, time,
+rtc_valid, uptime_s, sensor (ps | fs | as), param (offset | gain | zero), old,
+new, unit, source (factory | auto | field | reset), result (applied |
+refused)`. A new file starts with the factory values.
+
+At boot, and when a card is inserted while therapy is idle, the last applied
+value of each parameter is loaded back (`cal status` shows `src=card`); a zero
+already learned since boot is kept. `cal restore 0` skips that.
+
 ## OSCAR
 
 Copy the card (or its `DATALOG`, `STR.edf`, `Identification.json`) and import it in

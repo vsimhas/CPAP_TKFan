@@ -1067,6 +1067,11 @@
               <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
             </File>
             <File>
+              <FileName>sensor_cal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\sensor_cal.c</FilePath>
+            </File>
+            <File>
               <FileName>circuit_learn.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\circuit_learn.c</FilePath>
@@ -4973,6 +4978,11 @@
               <FileName>watchdog.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_cal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\sensor_cal.c</FilePath>
             </File>
             <File>
               <FileName>circuit_learn.c</FileName>

@@ -17,6 +17,8 @@
   *          ambient (AS)         frozen > 3 s, NaN / outside 500..1150 mbar
   *          motor drive (CM4)    status not advancing for 500 ms, a fault
   *                               active, or bus voltage outside 20..28 V
+  *          mask pressure zero refused by sensor_cal.c (more than
+  *                               1.5 cmH2O off the factory zero at rest, #84)
   *    warn  analog pressure (AMS5105) more than 2 cmH2O from PS at rest -
   *                               warn only: on the 2026-10-27 bench board it
   *                               read a fixed -26 cmH2O at rest and at
@@ -85,6 +87,7 @@ typedef enum
 #define PRECHECK_WARN_CLOCK    0x04U
 #define PRECHECK_WARN_HUMID    0x08U
 #define PRECHECK_WARN_TUBE     0x10U
+#define PRECHECK_WARN_FLOW_ZERO 0x20U   /* #84: flow zero refused */
 
 typedef struct
 {

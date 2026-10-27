@@ -11,6 +11,7 @@
 #include "flow_sensor.h"
 #include "blower_ipc.h"
 #include "rtc_clock.h"
+#include "sensor_cal.h"
 
 #include <math.h>
 #include <string.h>
@@ -168,7 +169,8 @@ bool Precheck_Run(PrecheckResult_t *out)
     {
         r.fail = PRECHECK_PS_RANGE;
     }
-    else if (at_rest && (fabsf(r.ps_cmh2o) > PC_PS_REST_MAX_CMH2O))
+    else if (at_rest && ((fabsf(r.ps_cmh2o) > PC_PS_REST_MAX_CMH2O)
+                         || Cal_PsZeroRejected()))
     {
         r.fail = PRECHECK_PS_OFFSET;
     }
@@ -220,6 +222,7 @@ bool Precheck_Run(PrecheckResult_t *out)
     if (!RtcClock_IsTimeValid())      { r.warn |= PRECHECK_WARN_CLOCK; }
     if (hSht4x.last_crc_ok == 0U)     { r.warn |= PRECHECK_WARN_HUMID; }
     if (hSts4x.last_crc_ok == 0U)     { r.warn |= PRECHECK_WARN_TUBE; }
+    if (Cal_FsZeroRejected())         { r.warn |= PRECHECK_WARN_FLOW_ZERO; }
 
     s_last_fail = r.fail;
     if (out != NULL)

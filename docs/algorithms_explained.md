@@ -168,6 +168,33 @@ disconnect: that will be **patient** flow, and what you are watching is the
 leak estimator learning that the extra flow is leak, not breathing. Total flow
 did not change.
 
+### 4.1 Zero, span and the calibration log (checklist #84)
+
+`sensor_cal.c`
+
+Factory calibration is what the parts carry (the AMS5935 transfer function, the
+flow element's LUT and zero). What drifts in service is kept on top of it:
+
+- **Device pressure zero.** `corrected = (raw − offset) × gain`. While therapy
+  is idle and the blower has been stopped for 3 s with no flow, three quiet
+  1 s windows (peak-peak ≤ 0.2 cmH2O) give a new offset — learned again on
+  every stop and every 10 min of idle. Within 1.5 cmH2O of the factory zero it
+  is applied; past that it is refused and the self-test will not start
+  therapy: a pressure sensor that far off is not something to quietly correct.
+- **Flow zero.** The idle auto-zero above, now refused past 0.05 mbar (~5 L/min)
+  from the factory zero; the self-test then warns (flow-zero errors bias leak
+  and events, not the delivered pressure).
+- **Span.** `cal ps gain` (0.95–1.05) against a reference gauge, and
+  `cal as offset` (±10 mbar) against a barometer. Gain stays 1.0 until there
+  is a reference.
+
+Every applied or refused change is a row in `CAL.CSV` (time, sensor,
+parameter, old, new, source), starting with the factory values, and the last
+applied values are loaded back at boot. Bench (2026-10-27, `cal test`
+offsets): +0.8 cmH2O learned in 3.6 s; +2.0 refused and the start refused;
++2 L/min of flow learned; +5 L/min refused with a warning; all reloaded from
+the card after a reflash.
+
 ---
 
 ## 5. Tube compensation: the pressure we control is an estimate
@@ -901,6 +928,7 @@ two to three times more Kp and Ki.
 | Pressure PID and feed-forward | `CM7/Core/Src/blower_ctrl.c` |
 | Mask pressure estimate | `CM7/Core/Src/tube_comp.c` |
 | Learn circuit (tube resistance) | `CM7/Core/Src/circuit_learn.c` |
+| Sensor zero / span, CAL.CSV | `CM7/Core/Src/sensor_cal.c` |
 | Flow conditioning | `CM7/Core/Src/flow_sensor.c` |
 | Leak estimation | `CM7/Core/Src/leak_estimator.c`, `leak_estimator_vivo.c` |
 | Therapy states, mask-off | `CM7/Core/Src/therapy.c` |

@@ -135,6 +135,10 @@ void  Flow_AutoZero(void);
  * (therapy stop) or USB "flow autozero". */
 void  Flow_AutoZeroService(float dt_s, bool allow);
 void  Flow_AutoZeroArm(void); /* allow one more idle trim after therapy stop */
+/* #84: the zero is limited to g_flow_az_limit_mbar around the factory one. */
+float Flow_GetZeroFactory(void);
+bool  Flow_IsZeroRejected(void);
+float Flow_GetZeroRejectedMbar(void);
 void  Flow_SetAutoZeroEnable(bool en);
 bool  Flow_IsAutoZeroEnabled(void);
 uint32_t Flow_GetAutoZeroCount(void);

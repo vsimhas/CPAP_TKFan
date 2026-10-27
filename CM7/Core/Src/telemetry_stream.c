@@ -36,6 +36,7 @@
 #include "periodic_breath.h"
 #include "precheck.h"
 #include "circuit_learn.h"
+#include "sensor_cal.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -429,7 +430,14 @@ static void Telem_PushErr(const char *reason)
 {
   char line[80];
   int n = snprintf(line, sizeof(line), "# err %s\r\n", reason);
-  if ((n > 0) && ((size_t)n < sizeof(line)))
+  if ((n > 0) && ((size_t)n >= sizeof(line)))
+  {
+    /* Too long: send it cut short rather than not at all (#84). */
+    n = (int)sizeof(line) - 1;
+    line[n - 2] = '\r';
+    line[n - 1] = '\n';
+  }
+  if (n > 0)
   {
     Telem_BufPush((const uint8_t *)line, (uint32_t)n);
   }
@@ -1961,6 +1969,80 @@ static void Telem_ProcessOneCommand(const char *cmd)
     }
     g_precheck_enable = (uint8_t)v;
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #84: sensor calibration. */
+  if (strncmp(cmd, "cal ", 4U) == 0)
+  {
+    const char *a = &cmd[4];
+    float fv = 0.0f;
+    long lv = 0;
+    bool ok = true;
+    if (strcmp(a, "status") == 0)
+    {
+      /* status only */
+    }
+    else if (strncmp(a, "ps gain ", 8U) == 0)
+    {
+      ok = Telem_ParseFloat(&a[8], &fv) && Cal_SetPsGain(fv);
+    }
+    else if (strncmp(a, "as offset ", 10U) == 0)
+    {
+      ok = Telem_ParseFloat(&a[10], &fv) && Cal_SetAsOffset(fv);
+    }
+    else if (strcmp(a, "ps zero") == 0)
+    {
+      Cal_ArmPsZero();
+    }
+    else if (strcmp(a, "fs zero") == 0)
+    {
+      Cal_ArmFsZero();
+    }
+    else if (strcmp(a, "reset") == 0)
+    {
+      Cal_ResetToFactory();
+    }
+    else if (strncmp(a, "ps auto ", 8U) == 0)
+    {
+      ok = Telem_ParseLong(&a[8], &lv) && ((lv == 0) || (lv == 1));
+      if (ok) { g_cal_ps_auto = (uint8_t)lv; }
+    }
+    else if (strncmp(a, "restore ", 8U) == 0)
+    {
+      ok = Telem_ParseLong(&a[8], &lv) && ((lv == 0) || (lv == 1));
+      if (ok) { g_cal_restore = (uint8_t)lv; }
+    }
+    else if (strcmp(a, "test none") == 0)
+    {
+      Cal_SetTest(0.0f, 0.0f);
+    }
+    else if (strncmp(a, "test ps ", 8U) == 0)
+    {
+      ok = Telem_ParseFloat(&a[8], &fv);
+      if (ok) { Cal_SetTest(fv, Cal_FsInjectMbar()); }
+    }
+    else if (strncmp(a, "test fs ", 8U) == 0)
+    {
+      ok = Telem_ParseFloat(&a[8], &fv);
+      if (ok) { Cal_SetTest(0.0f, fv); }
+    }
+    else
+    {
+      ok = false;
+    }
+    if (!ok)
+    {
+      Telem_PushErr("cal: unknown, or out of limits (ps gain 0.95..1.05, as offset +-10)");
+      return;
+    }
+    Telem_PushAck(cmd);
+    char line[384];
+    const int n = Cal_FormatStatus(line, sizeof(line));
+    if (n > 0)
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
     return;
   }
 

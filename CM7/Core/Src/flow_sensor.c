@@ -94,7 +94,10 @@ extern BlowerIpcStatus_t g_blower_status; /* main.c, refreshed at 100 Hz   */
 
 /* === Public configuration (debugger-visible volatiles) === */
 volatile float    g_flow_lpf_cutoff_hz   = 10.0f;      /* tunable cutoff    */
-volatile float    g_flow_zero_offset_mbar = -0.033f;   /* Round Hole_2 zero */
+/* Factory zero (cal sheet). The idle auto-zero trims around it, within
+ * g_flow_az_limit_mbar (#84). */
+#define FLOW_ZERO_FACTORY_MBAR  (-0.033f)
+volatile float    g_flow_zero_offset_mbar = FLOW_ZERO_FACTORY_MBAR;   /* Round Hole_2 zero */
 
 /* Optional SLM (SFM3300) → BTPS scaling applied after density correction.
  * Ambient P defaults to 1013.25 mbar and is overwritten live from
@@ -228,6 +231,13 @@ volatile uint32_t g_flow_step_count    = 0U;
  * toward that mean at ~0.3 slm/s. Never copy a single sample. */
 volatile uint8_t  g_flow_az_enable           = 1U;
 volatile float    g_flow_az_quiet_pp_mbar    = 0.025f; /* AC gate (not Q)   */
+/* #84: a zero further than this from the factory zero is refused (kept at
+ * the old value) and flagged - ~5 L/min near zero. 2026-10-27 bench: idle
+ * zero -0.0349 against -0.033. 0 = no limit. */
+volatile float    g_flow_az_limit_mbar       = 0.05f;
+volatile uint8_t  g_flow_az_rejected         = 0U;
+volatile float    g_flow_az_rejected_mbar    = 0.0f;   /* the refused zero  */
+volatile uint32_t g_flow_az_reject_count     = 0U;
 volatile float    g_flow_az_slew_mbar_per_s  = 0.003f; /* ~0.3 slm/s        */
 volatile float    g_flow_az_done_mbar        = 0.0005f; /* ~0.05 slm band   */
 volatile uint32_t g_flow_az_quiet_ms         = 5000U;  /* mean window       */
@@ -562,7 +572,7 @@ float Flow_DpToSlm(float dp_corrected_mbar)
 void Flow_Init(void)
 {
     g_flow_lpf_cutoff_hz    = 10.0f;
-    g_flow_zero_offset_mbar = -0.033f;
+    g_flow_zero_offset_mbar = FLOW_ZERO_FACTORY_MBAR;
     g_flow_btps_enable      = 0U;
     g_flow_btps_amb_mbar    = FLOW_BTPS_P_DEFAULT;
     g_flow_alt_enable       = 1U;
@@ -737,9 +747,39 @@ void Flow_SetZeroOffset(float mbar)
     Leak_NudgeUnintentional(g_flow_q_slm - q_before);
 }
 
+/* #84: true (and flagged) if this zero is too far from the factory one. */
+static bool autoZeroRefused(float target_mbar)
+{
+    const float lim = g_flow_az_limit_mbar;
+    if ((lim > 0.0f) && (fabsf(target_mbar - FLOW_ZERO_FACTORY_MBAR) > lim))
+    {
+        if (g_flow_az_rejected == 0U)
+        {
+            g_flow_az_reject_count++;
+        }
+        g_flow_az_rejected = 1U;
+        g_flow_az_rejected_mbar = target_mbar;
+        g_flow_az_slewing = 0U;
+        g_flow_az_latched = 1U;           /* wait for the next idle period */
+        s_az_cmd_slew = 0U;
+        s_az_latch_ms = 0U;
+        return true;
+    }
+    g_flow_az_rejected = 0U;
+    return false;
+}
+
+float Flow_GetZeroFactory(void)      { return FLOW_ZERO_FACTORY_MBAR; }
+bool  Flow_IsZeroRejected(void)      { return (g_flow_az_rejected != 0U); }
+float Flow_GetZeroRejectedMbar(void) { return g_flow_az_rejected_mbar; }
+
 void Flow_AutoZero(void)
 {
     /* Commanded trim: slew toward the current LPF ΔP. Still no snap. */
+    if (autoZeroRefused(g_flow_dp_filt_mbar))
+    {
+        return;
+    }
     g_flow_az_target_mbar = g_flow_dp_filt_mbar;
     g_flow_az_slewing = 1U;
     g_flow_az_latched = 0U;
@@ -954,6 +994,10 @@ void Flow_AutoZeroService(float dt_s, bool allow)
     const uint32_t need_ms = (g_flow_az_quiet_ms < 1000U) ? 1000U : g_flow_az_quiet_ms;
     if ((s_az_quiet_ms >= need_ms) && s_az_mean_seeded)
     {
+        if (autoZeroRefused(s_az_mean_dp))
+        {
+            return;
+        }
         g_flow_az_target_mbar = s_az_mean_dp;
         autoZeroSlewToward(g_flow_az_target_mbar, dt_s);
     }

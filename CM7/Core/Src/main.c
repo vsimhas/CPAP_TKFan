@@ -50,6 +50,7 @@
 #include "session_edf_log.h"
 #include "precheck.h"
 #include "circuit_learn.h"
+#include "sensor_cal.h"
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
@@ -2448,7 +2449,7 @@ static void SensorTask(void *argument)
       if ((AMS5935_ReadRaw(&hamsFS, &measFS) == HAL_OK)
           && (AMS5935_WasSampleHeld(&hamsFS) == 0U))
       {
-        Flow_Update(measFS.pressure, fs_dt_s,
+        Flow_Update(measFS.pressure + Cal_FsInjectMbar(), fs_dt_s,
                     AMS5935_WasSampleSaturated(&hamsFS) != 0U);
         fs_dt_s = 0.0f;
         (void)AMS5935_StartSingleMeasurement(&hamsFS);
@@ -2475,11 +2476,16 @@ static void SensorTask(void *argument)
         && (g_bench_blower_enable == 0U)
         && (g_blower_status.mech_speed_rpm < 500);
     Flow_AutoZeroService(dt_s, therapy_idle && blower_idle);
+    /* #84: device-pressure zero, flow-zero log. */
+    Cal_Update(period_ms, therapy_idle && blower_idle, Flow_GetSlm());
 
     /* SPI4: AS or PS - mutually exclusive each tick. */
     if (as_in_flight)
     {
-      (void)AMS5935_ReadRaw(&hamsAS, &measAS);
+      if (AMS5935_ReadRaw(&hamsAS, &measAS) == HAL_OK)
+      {
+        measAS.pressure = Cal_ApplyAs(measAS.pressure);   /* #84 */
+      }
       as_in_flight = 0U;
       /* Ambient absolute P (mbar) from AS drives orifice density altitude
        * compensation and optional BTPS scaling. */
@@ -2497,6 +2503,9 @@ static void SensorTask(void *argument)
        * refreshed at all. */
       if (AMS5935_ReadRaw(&hamsPS, &measPS) == HAL_OK)
       {
+        /* #84: zero / span. ReadRaw rewrites .pressure from the raw word
+         * (or the held last-good one) every time, so this never stacks. */
+        measPS.pressure   = Cal_ApplyPs(measPS.pressure);
         g_ps_sample_dt_s  = ps_dt_s;
         g_ps_sample_fresh = 1U;
         ps_dt_s = 0.0f;
@@ -2906,6 +2915,7 @@ static void SelfTestTask(void *argument)
     Adherence_Service();        /* #65: from SUMMARY.CSV */
     FaultLog_Service();         /* #86: drive faults + FAULTS.CSV */
     CircuitLearn_Service();     /* #85: CIRCUIT.CSV log + reload */
+    Cal_Service();              /* #84: CAL.CSV log + reload */
 
     if (sdram_test_step != 100U)
     {
