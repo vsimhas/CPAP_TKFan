@@ -20,7 +20,7 @@ set; a second session in the same second bumps the seconds field.
 | File | Records | Signals |
 |------|---------|---------|
 | BRP | 1 s @ 25 Hz | `Flow.40ms` (L/s), `Press.40ms` (cmH2O) |
-| PLD | 1 s @ 1 Hz | `MaskPress.2s`, `Press.2s` (target), `Leak.2s` (L/s) |
+| PLD | 1 s @ 1 Hz | `MaskPress.2s`, `Press.2s` (target), `Leak.2s` (L/s), `Snore.2s`, `FlowLim.2s` |
 | EVE | EDF+D, 64-byte records | `EDF Annotations` + `Crc16` |
 
 **EVE** (checklist #59) follows the AirSense 11's own file byte for byte: the
@@ -33,9 +33,38 @@ stamped at its **end** (seconds from the file start) and carries its duration:
   held until that window closes, and dropped if re-scored;
 - a hypopnea is written when breathing recovers.
 
-Flow limitation and snore have no EVE entry in OSCAR's loader; they belong in PLD as
-continuous indices (#60/#61). `STR.edf` is still a header-only stub; the session
-summary is in `SUMMARY.CSV` (below).
+Flow limitation and snore have no EVE entry in OSCAR's loader. As on the AirSense,
+they are continuous indices in PLD (#60 / #61), which OSCAR plots as its Snore and
+Flow Limitation graphs. Both use the AirSense's ranges, and both read 0 when the
+session is not scored (`apap set cpap_scoring 0`):
+
+- **`FlowLim.2s`** (0 to 1): the last breath's flow-limitation index. It takes the
+  larger of two terms, computed from the same whole-inspiration shape that the FL
+  detector uses (R13):
+  - `(flatness - 0.66) / 0.20`;
+  - `(0.96 - dip) / 0.10`.
+
+  Normal breathing reads 0. The detection lines (flatness 0.72, dip 0.93) read 0.30.
+  A plateau or an M notch at 0.86 reads 1. The index goes back to 0 after 10 s with
+  no breath. This is **our own scale** on ResMed's range, not ResMed's: on the same
+  simulator breaths, the AirSense read plateau 90 % at 0.28 / 0.42 (median / max)
+  and M 90 % at 0.45 / 0.60.
+- **`Snore.2s`** (0 to 5): while the snore detector is on, the inspiratory
+  high-frequency flow RMS divided by its threshold (`snore_rms_thresh`, 0.35 slm);
+  otherwise 0. So 1 means "at threshold".
+  The detector input is a 2nd-order Butterworth high-pass (`snore_hp_hz`, 20 Hz,
+  limited to 5-40 Hz) on raw patient flow, sampled at ~100 Hz, so snore content
+  above ~50 Hz is not seen. It counts over the whole inspiration (the R13 segment,
+  not just the ~1.2 s EPR phase) and needs `snore_on_s` (1.5 s) of it to turn on;
+  expiration neither builds nor clears it.
+  Bench 2026-10-27: clean simulated breathing reads ~0.20 slm (rig noise floor),
+  so the 0.35 threshold has only ~1.7x margin and wants a check against a real
+  snore recording. The simulator's 35 Hz blower modulation does not reach the
+  flow, so no positive snore test is possible on the rig; the logging path was
+  proven by lowering `snore_rms_thresh` to 0.05.
+
+`STR.edf` is still a header-only stub; the session summary is in `SUMMARY.CSV`
+(below).
 
 Inspect a file without a viewer:
 
@@ -46,7 +75,7 @@ python pc_tools/edf_inspect.py <file>.edf
 ## Session summary: `0:/SUMMARY.CSV` (checklist #57)
 
 When therapy stops, one line per session is appended to `SUMMARY.CSV` at the card
-root (created with a `# ... schema 1` comment and a column header). Column 1 is the
+root (created with a `# ... schema N` comment and a column header). Column 1 is the
 schema version: columns are only ever added at the end, with the version bumped.
 
 | Columns | Meaning |
@@ -59,6 +88,13 @@ schema version: columns are only ever added at the end, with the version bumped.
 | `events_scored`, `oa`, `ca`, `hyp`, `fl`, `snore` | scored events; scored in AutoSet and in CPAP mode (#33: detectors on, no titration); `events_scored` 0 only with `apap set cpap_scoring 0` |
 | `ahi`, `rdi`, `si` | per hour of **mask-on** time |
 | `edf` | the session's DATALOG name, e.g. `20261026_140818` |
+| `fl_idx_avg`, `fl_idx_p95` | flow-limitation index (`FlowLim.2s` scale), mean and P95 over the session's breaths (schema 2) |
+| `fl_s`, `snore_s` | seconds with the FL flag / snore detector on (schema 2) |
+
+Schema 2 (#60 / #61) added the last four columns. When a card already holds a schema-1
+file, a `# schema 2` comment and the new header line are appended before the next
+record. Readers (`adherence.c`, `adherence_check.py`) re-map the columns at every
+header line.
 
 The record is snapshotted in RAM at stop and written to the card. The card is mounted
 whenever one is in and has passed its self-test, **whether or not EDF logging is

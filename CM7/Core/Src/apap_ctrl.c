@@ -22,6 +22,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 /* === Tunables (debugger-writable) === */
 /* Apnea timing - 2026-10-12, BreathSimulator AutoSet trials
@@ -225,7 +226,7 @@ volatile float   g_apap_snore_rms_thresh_slm       = 0.35f;
 volatile float   g_apap_snore_on_s                 = 1.5f;
 volatile float   g_apap_snore_off_s                = 2.0f;
 volatile float   g_apap_snore_raise_scale          = 0.35f;
-volatile float   g_apap_snore_hp_hz                = 20.0f;  /* residual HP corner */
+volatile float   g_apap_snore_hp_hz                = 20.0f;  /* 2nd-order HP corner, 5..40 Hz */
 
 /* Down-titration + leak gate. */
 volatile uint8_t g_apap_lower_enable               = 1U;
@@ -274,6 +275,21 @@ volatile uint32_t g_apap_therapy_ms               = 0U;
 
 #define FOT_Q_PP_EPS_SLM  0.15f
 #define FL_SEV_SPAN       0.10f   /* shape past its threshold for full FL raise */
+
+/* #61 flow-limitation index, 0 (normal) .. 1 (fully limited), per breath,
+ * from the same whole-inspiration flatness and dip as the detector. Normal
+ * breathing reads 0 (flatness <= 0.66, dip ~1.0); the detection lines
+ * (flatness 0.72, dip 0.93) read 0.30; a plateau at 0.86 or an M notch at
+ * 0.86 reads 1. Our own scale on ResMed's FlowLim.2s range - not theirs. */
+#define FL_IDX_FLAT0      0.66f
+#define FL_IDX_FLAT_SPAN  0.20f
+#define FL_IDX_DIP0       0.96f
+#define FL_IDX_DIP_SPAN   0.10f
+#define FL_IDX_HOLD_MS    10000U  /* no breath for this long: index 0 */
+#define FL_IDX_HIST_N     101U    /* 0.00 .. 1.00 in 0.01 bins */
+#define SNORE_LEVEL_MAX   5.0f    /* Snore.2s range */
+#define SNORE_BREAK_MS    500U    /* quiet inspiration that breaks a snore onset */
+#define SNORE_NO_INSP_MS  10000U  /* no inspiration at all: snore over */
 #define FOT_Z_BLOCKED     999.0f
 
 /* === Internal === */
@@ -307,12 +323,16 @@ static uint32_t   s_hyp_limited_ms = 0U;
 static bool       s_hyp_active = false;
 static uint32_t   s_hyp_hold_ms = 0U;
 
-/* Snore detector. */
-static float      s_snore_prev_q = 0.0f;
-static float      s_snore_hp = 0.0f;
+/* Snore detector: 2nd-order HP biquad state (x = input, y = output). */
+static float      s_snore_x1 = 0.0f;
+static float      s_snore_x2 = 0.0f;
+static float      s_snore_y1 = 0.0f;
+static float      s_snore_y2 = 0.0f;
 static float      s_snore_rms2 = 0.0f;
 static uint32_t   s_snore_on_ms = 0U;
 static uint32_t   s_snore_off_ms = 0U;
+static uint32_t   s_snore_quiet_ms = 0U;
+static uint32_t   s_snore_no_insp_ms = 0U;
 static bool       s_snore_active = false;
 static bool       s_snore_was_active = false;
 static uint32_t   s_insp_ms = 0U;
@@ -334,6 +354,14 @@ static float      s_fl_seg_bin_sum = 0.0f;
 static uint32_t   s_fl_seg_bin_n = 0U;
 static uint32_t   s_fl_seg_bin_ms = 0U;
 static float      s_fl_last_dip = 1.0f;
+/* #60 / #61: the last breath's FL index, and the session statistics. */
+static float      s_fl_index = 0.0f;
+static uint32_t   s_fl_index_age_ms = FL_IDX_HOLD_MS;
+static uint32_t   s_sess_fl_hist[FL_IDX_HIST_N];
+static uint32_t   s_sess_fl_n = 0U;
+static float      s_sess_fl_sum = 0.0f;
+static uint32_t   s_sess_fl_ms = 0U;
+static uint32_t   s_sess_snore_ms = 0U;
 static float      s_resume_ref_slm = 0.0f;    /* baseline held at episode start */
 /* R2: one long hypopnea is one event - re-arm only after a breath that is
  * no longer hypopnea-limited. */
@@ -815,11 +843,15 @@ static void resetBreathDetectors(void)
     s_hyp_obstructive = false;
     g_apap_hyp_active = 0U;
 
-    s_snore_prev_q = 0.0f;
-    s_snore_hp = 0.0f;
+    s_snore_x1 = 0.0f;
+    s_snore_x2 = 0.0f;
+    s_snore_y1 = 0.0f;
+    s_snore_y2 = 0.0f;
     s_snore_rms2 = 0.0f;
     s_snore_on_ms = 0U;
     s_snore_off_ms = 0U;
+    s_snore_quiet_ms = 0U;
+    s_snore_no_insp_ms = 0U;
     s_snore_active = false;
     s_snore_was_active = false;
     g_apap_snore_active = 0U;
@@ -838,6 +870,20 @@ static void resetSessionEvents(void)
     g_apap_evt_fl = 0U;
     g_apap_evt_snore = 0U;
     g_apap_therapy_ms = 0U;
+    memset(s_sess_fl_hist, 0, sizeof(s_sess_fl_hist));
+    s_sess_fl_n = 0U;
+    s_sess_fl_sum = 0.0f;
+    s_sess_fl_ms = 0U;
+    s_sess_snore_ms = 0U;
+    s_fl_index = 0.0f;
+    s_fl_index_age_ms = FL_IDX_HOLD_MS;
+}
+
+static float flIndexOf(float flat, float dip)
+{
+    const float f = clampf((flat - FL_IDX_FLAT0) / FL_IDX_FLAT_SPAN, 0.0f, 1.0f);
+    const float d = clampf((FL_IDX_DIP0 - dip) / FL_IDX_DIP_SPAN, 0.0f, 1.0f);
+    return (f > d) ? f : d;
 }
 
 static void noteFlEdge(void)
@@ -933,11 +979,22 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         g_apap_fl_last_flat = flat;
         s_fl_last_dip = dip;
         g_apap_fl_last_dip = dip;
+        s_fl_index = flIndexOf(flat, dip);
+        s_fl_index_age_ms = 0U;
     }
 
     if (!(peak_slm >= min_peak))
     {
         return;
+    }
+
+    /* #61: session distribution over real breaths only. */
+    {
+        uint32_t bin = (uint32_t)lrintf(s_fl_index * 100.0f);
+        if (bin >= FL_IDX_HIST_N) { bin = FL_IDX_HIST_N - 1U; }
+        s_sess_fl_hist[bin]++;
+        s_sess_fl_n++;
+        s_sess_fl_sum += s_fl_index;
     }
     if (s_breaths_seen < 1000000U) { s_breaths_seen++; }   /* R7a */
 
@@ -1223,19 +1280,27 @@ static void updateSnoreDetector(float dt_s, uint32_t dt_ms)
         return;
     }
 
+    /* 2nd-order Butterworth HP (bilinear) on raw patient flow. The old
+     * front end - a 1st-order HP with the LPF coefficient (so the corner
+     * moved the wrong way) blended with raw minus the 2 Hz breath LPF -
+     * passed ~10 % of the breath itself: a clean 19 slm sine breath read
+     * 0.67 slm against the 0.35 threshold, and with the inspiration gate
+     * fixed every breath scored as snore (#60, bench 2026-10-27). This
+     * leaves a clean breath at <= 0.07 slm while a 1 slm-peak 30-40 Hz
+     * tone reads ~0.7. Flow is sampled at ~100 Hz, so fc stays under
+     * Nyquist and snore content above ~50 Hz is not seen at all. */
     const float q_raw = Flow_GetPatientRawSlm();
-    const float fc = clampf(g_apap_snore_hp_hz, 5.0f, 80.0f);
-    /* First-order HP: y += a*(y + x - x_prev) with a = 1/(1+2*pi*fc*dt)
-     * approx via residual of raw vs breath LPF when dt small. */
-    const float a = clampf((2.0f * 3.14159265f * fc * dt_s)
-                               / (1.0f + 2.0f * 3.14159265f * fc * dt_s),
-                           0.01f, 0.95f);
-    s_snore_hp = a * (s_snore_hp + q_raw - s_snore_prev_q);
-    s_snore_prev_q = q_raw;
-
-    /* Also blend residual vs breath-band patient flow (snore = HF). */
-    const float resid = q_raw - Flow_GetPatientSlm();
-    const float hf = 0.5f * (s_snore_hp + resid);
+    const float fc = clampf(g_apap_snore_hp_hz, 5.0f, 40.0f);
+    const float k = tanf(3.14159265f * clampf(fc * dt_s, 0.005f, 0.45f));
+    const float norm = 1.0f / (1.0f + (1.41421356f * k) + (k * k));
+    const float a1 = 2.0f * ((k * k) - 1.0f) * norm;
+    const float a2 = (1.0f - (1.41421356f * k) + (k * k)) * norm;
+    const float hf = (norm * (q_raw - (2.0f * s_snore_x1) + s_snore_x2))
+                   - (a1 * s_snore_y1) - (a2 * s_snore_y2);
+    s_snore_x2 = s_snore_x1;
+    s_snore_x1 = q_raw;
+    s_snore_y2 = s_snore_y1;
+    s_snore_y1 = hf;
 
     const float alpha_rms = clampf(dt_s / 0.20f, 0.01f, 0.5f); /* ~200 ms */
     s_snore_rms2 = ((1.0f - alpha_rms) * s_snore_rms2) + (alpha_rms * hf * hf);
@@ -1248,24 +1313,51 @@ static void updateSnoreDetector(float dt_s, uint32_t dt_ms)
     const uint32_t off_need =
         (uint32_t)(clampf(g_apap_snore_off_s, 0.3f, 15.0f) * 1000.0f);
 
-    /* Prefer snore during inspiration (effort + vibration). */
-    const bool insp = (Epr_GetPhase() == EPR_PHASE_INSPIRATION);
-    if (insp && (rms >= thr))
+    /* Snoring is inspiratory, so only inspiration builds or releases it -
+     * the whole inspiration (the R13 segment, judged by
+     * updateFlHypDetector() earlier this tick), not only the EPR INSPIRATION
+     * phase. That phase ends at its ~1.2 s max-hold, shorter than
+     * snore_on_s, and with the onset timer cleared at every expiration
+     * snore could never turn on (#60, bench 2026-10-26). Expiration neither
+     * builds nor clears it; SNORE_BREAK_MS of quiet inspiration breaks an
+     * onset, and no inspiration at all for SNORE_NO_INSP_MS ends it. */
+    const bool insp = (Epr_GetPhase() == EPR_PHASE_INSPIRATION)
+                   || (s_fl_seg_active && s_fl_seg_confirmed);
+    if (insp)
     {
-        s_snore_on_ms += dt_ms;
-        s_snore_off_ms = 0U;
-        if (s_snore_on_ms >= on_need)
+        s_snore_no_insp_ms = 0U;
+        if (rms >= thr)
         {
-            s_snore_active = true;
+            s_snore_on_ms += dt_ms;
+            s_snore_quiet_ms = 0U;
+            s_snore_off_ms = 0U;
+            if (s_snore_on_ms >= on_need)
+            {
+                s_snore_active = true;
+            }
+        }
+        else
+        {
+            s_snore_quiet_ms += dt_ms;
+            s_snore_off_ms += dt_ms;
+            if (s_snore_quiet_ms >= SNORE_BREAK_MS)
+            {
+                s_snore_on_ms = 0U;
+            }
+            if (s_snore_off_ms >= off_need)
+            {
+                s_snore_active = false;
+            }
         }
     }
     else
     {
-        s_snore_off_ms += dt_ms;
-        s_snore_on_ms = 0U;
-        if (s_snore_off_ms >= off_need)
+        if (s_snore_no_insp_ms < SNORE_NO_INSP_MS) { s_snore_no_insp_ms += dt_ms; }
+        if (s_snore_no_insp_ms >= SNORE_NO_INSP_MS)
         {
             s_snore_active = false;
+            s_snore_on_ms = 0U;
+            s_snore_off_ms = 0U;
         }
     }
 
@@ -1638,6 +1730,49 @@ float Apap_GetSessionSnoreIndex(void)
     return ((float)g_apap_evt_snore) / hrs;
 }
 
+float Apap_GetFlowLimIndex(void)
+{
+    return (s_active && (s_fl_index_age_ms < FL_IDX_HOLD_MS)) ? s_fl_index : 0.0f;
+}
+
+float Apap_GetSnoreLevel(void)
+{
+    if (!s_active || !s_snore_active)
+    {
+        return 0.0f;
+    }
+    const float thr = clampf(g_apap_snore_rms_thresh_slm, 0.05f, 5.0f);
+    return clampf(g_apap_snore_rms_slm / thr, 0.0f, SNORE_LEVEL_MAX);
+}
+
+float Apap_GetSessionFlIndexAvg(void)
+{
+    return (s_sess_fl_n > 0U) ? (s_sess_fl_sum / (float)s_sess_fl_n) : 0.0f;
+}
+
+float Apap_GetSessionFlIndexP95(void)
+{
+    if (s_sess_fl_n == 0U)
+    {
+        return 0.0f;
+    }
+    /* Smallest bin with at least 95 % of the breaths at or below it. */
+    const uint32_t need = ((s_sess_fl_n * 95U) + 99U) / 100U;
+    uint32_t cum = 0U;
+    for (uint32_t i = 0U; i < FL_IDX_HIST_N; i++)
+    {
+        cum += s_sess_fl_hist[i];
+        if (cum >= need)
+        {
+            return (float)i / 100.0f;
+        }
+    }
+    return 1.0f;
+}
+
+uint32_t Apap_GetSessionFlSeconds(void)    { return s_sess_fl_ms / 1000U; }
+uint32_t Apap_GetSessionSnoreSeconds(void) { return s_sess_snore_ms / 1000U; }
+
 int Apap_FormatDiag(char *buf, unsigned len)
 {
     /* R11: what decides whether a breath ends an episode, in one place. */
@@ -1705,6 +1840,9 @@ float Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off)
 
     const uint32_t dt_ms = (uint32_t)lrintf(dt_s * 1000.0f);
     g_apap_therapy_ms += dt_ms;
+    if (s_fl_index_age_ms < FL_IDX_HOLD_MS) { s_fl_index_age_ms += dt_ms; }
+    if (s_fl_active)    { s_sess_fl_ms += dt_ms; }      /* #61 */
+    if (s_snore_active) { s_sess_snore_ms += dt_ms; }   /* #60 */
     s_pending_ca_ms = (s_pending_ca_ms > dt_ms) ? (s_pending_ca_ms - dt_ms) : 0U;
     if (s_ev_hold && (s_pending_ca_ms == 0U))
     {

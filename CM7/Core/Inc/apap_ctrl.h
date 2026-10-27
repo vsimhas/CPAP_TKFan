@@ -104,6 +104,14 @@ float      Apap_GetSessionAhi(void);   /* (OA + CA + hyp) / hour of therapy */
 float      Apap_GetSessionRdi(void);   /* (OA + CA + hyp + FL) / hour       */
 float      Apap_GetSessionSnoreIndex(void); /* snore events / hour     */
 
+/* #60 / #61: continuous indices for the PLD file (Snore.2s, FlowLim.2s). */
+float      Apap_GetFlowLimIndex(void);  /* last breath, 0..1; 0 after 10 s without one */
+float      Apap_GetSnoreLevel(void);    /* snore RMS / threshold while snoring, else 0; 0..5 */
+float      Apap_GetSessionFlIndexAvg(void);  /* mean over the session's breaths */
+float      Apap_GetSessionFlIndexP95(void);
+uint32_t   Apap_GetSessionFlSeconds(void);    /* time flow-limited (FL flag) */
+uint32_t   Apap_GetSessionSnoreSeconds(void); /* time snoring */
+
 #ifdef __cplusplus
 }
 #endif

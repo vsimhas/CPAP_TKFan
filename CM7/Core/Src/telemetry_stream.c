@@ -1784,12 +1784,13 @@ static void Telem_ProcessOneCommand(const char *cmd)
 
   if (strcmp(cmd, "therapy apap events") == 0)
   {
-    char line[256];
+    char line[352];
     int n = snprintf(line, sizeof(line),
                      "# APAP OA=%lu CA=%lu Hyp=%lu FL=%lu Snore=%lu "
                      "t_ms=%lu AHI=%.2f RDI=%.2f SI=%.2f "
                      "st=%s hyp=%u fl=%u sn=%u leak_blk=%u "
-                     "pol=%d pol_ev=%.1f pol_bad=%u flat=%.2f dip=%.2f\r\n",
+                     "pol=%d pol_ev=%.1f pol_bad=%u flat=%.2f dip=%.2f "
+                     "fli=%.2f snl=%.2f fli_avg=%.2f fli_p95=%.2f fl_s=%lu sn_s=%lu snr=%.3f\r\n",
                      (unsigned long)Apap_GetEventOaCount(),
                      (unsigned long)Apap_GetEventCaCount(),
                      (unsigned long)Apap_GetEventHypCount(),
@@ -1811,7 +1812,15 @@ static void Telem_ProcessOneCommand(const char *cmd)
                      (unsigned)g_epr_insp_polarity_mismatch,
                      /* R13: the last breath's whole-inspiration shape. */
                      (double)Apap_GetFlLastFlat(),
-                     (double)Apap_GetFlLastDip());
+                     (double)Apap_GetFlLastDip(),
+                     /* #60 / #61: as logged to PLD and SUMMARY.CSV. */
+                     (double)Apap_GetFlowLimIndex(),
+                     (double)Apap_GetSnoreLevel(),
+                     (double)Apap_GetSessionFlIndexAvg(),
+                     (double)Apap_GetSessionFlIndexP95(),
+                     (unsigned long)Apap_GetSessionFlSeconds(),
+                     (unsigned long)Apap_GetSessionSnoreSeconds(),
+                     (double)Apap_GetSnoreRmsSlm());
     Telem_PushAck(cmd);
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {

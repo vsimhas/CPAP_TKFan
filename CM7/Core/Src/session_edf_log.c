@@ -14,6 +14,7 @@
 #include "flow_sensor.h"
 #include "blower_ctrl.h"
 #include "leak_estimator.h"
+#include "apap_ctrl.h"
 #include "main.h"
 #include "ff.h"
 #include "rtc_clock.h"
@@ -106,7 +107,7 @@ static const EdfSignalDesc_t s_sigs[EDF_NSIG] = {
  *
  * Best-effort by design: if PLD cannot be opened or written, BRP logging
  * carries on. A new file must not be able to break the existing one. */
-#define PLD_NSIG            3U
+#define PLD_NSIG            5U
 #define PLD_SPR             1U      /* samples per 1 s record */
 #define PLD_BUF_N           (PLD_NSIG * PLD_SPR)
 
@@ -115,6 +116,10 @@ static const EdfSignalDesc_t s_pld_sigs[PLD_NSIG] = {
     { "MaskPress.2s", "Mask pressure", "cmH2O", -40.0f, 40.0f, -32768, 32767, "none", PLD_SPR },
     { "Press.2s",     "Therapy target", "cmH2O", -50.0f, 50.0f, -32768, 32767, "none", PLD_SPR },
     { "Leak.2s",      "Unintentional leak", "L/s", -2.0f, 2.0f, -32768, 32767, "LP", PLD_SPR },
+    /* #60 / #61: ranges as the AirSense writes them. Both start at 0 / dig
+     * 0, so their EDF offset is zero too, which is what OSCAR assumes. */
+    { "Snore.2s",     "Snore",            "",    0.0f,  5.0f, 0, 250, "none", PLD_SPR },
+    { "FlowLim.2s",   "Flow limitation",  "",    0.0f,  1.0f, 0, 100, "none", PLD_SPR },
 };
 
 static EdfWriter_t s_pld;
@@ -783,6 +788,8 @@ static void pushSample(float flow, float press, float leak, float target)
     s_pld_acc[0] += press;
     s_pld_acc[1] += target;
     s_pld_acc[2] += leak / 60.0f;      /* L/min -> L/s (Leak.2s) */
+    s_pld_acc[3] += Apap_GetSnoreLevel();
+    s_pld_acc[4] += Apap_GetFlowLimIndex();
     s_pld_acc_n++;
 
     if (s_fill[0] >= EDF_SAMPLES_PER_SIG)

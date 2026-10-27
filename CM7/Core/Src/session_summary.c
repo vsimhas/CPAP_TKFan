@@ -25,7 +25,8 @@ static const char k_header[] =
     "mode,p_cpap,apap_min,apap_max,epr_type,epr_level,ramp_min,"
     "p_avg,p_min,p_max,p50,p90,p95,"
     "leak_avg,leak_p50,leak_p95,leak_max,leak_high_s,leak_low_s,"
-    "events_scored,oa,ca,hyp,fl,snore,ahi,rdi,si,edf";
+    "events_scored,oa,ca,hyp,fl,snore,ahi,rdi,si,edf,"
+    "fl_idx_avg,fl_idx_p95,fl_s,snore_s";
 
 static RtcDateTime_t s_start;
 static bool          s_start_valid = false;
@@ -130,7 +131,8 @@ void SessionSummary_OnTherapyStop(void)
         "%s,%.1f,%.1f,%.1f,%u,%u,%u,"
         "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,"
         "%.1f,%.1f,%.1f,%.1f,%.0f,%.0f,"
-        "%u,%lu,%lu,%lu,%lu,%lu,%.2f,%.2f,%.2f,%s",
+        "%u,%lu,%lu,%lu,%lu,%lu,%.2f,%.2f,%.2f,%s,"
+        "%.2f,%.2f,%lu,%lu",
         (unsigned)SESSION_SUMMARY_SCHEMA, t_start, t_end,
         (RtcClock_IsTimeValid() && s_start_valid) ? 1U : 0U,
         (unsigned long)run_s, (unsigned long)on_s, (unsigned long)off_s,
@@ -146,12 +148,71 @@ void SessionSummary_OnTherapyStop(void)
         (double)Leak_GetSessionHighTimeS(), (double)Leak_GetSessionLowTimeS(),
         scored ? 1U : 0U, (unsigned long)oa, (unsigned long)ca, (unsigned long)hyp,
         (unsigned long)fl, (unsigned long)sn,
-        (double)ahi, (double)rdi, (double)si, edf);
+        (double)ahi, (double)rdi, (double)si, edf,
+        (double)(scored ? Apap_GetSessionFlIndexAvg() : 0.0f),
+        (double)(scored ? Apap_GetSessionFlIndexP95() : 0.0f),
+        (unsigned long)(scored ? Apap_GetSessionFlSeconds() : 0U),
+        (unsigned long)(scored ? Apap_GetSessionSnoreSeconds() : 0U));
     if ((n > 0) && ((size_t)n < sizeof(s_line)))
     {
         s_has_last = true;
         s_pending = true;
     }
+}
+
+/* True if the last "schema," line in the (open, append-mode) file is our
+ * header. Reads the whole file - one short line per session - then leaves
+ * the pointer at the end again. */
+static bool lastHeaderIsCurrent(FIL *f)
+{
+    static char buf[256];
+    static char line[sizeof(k_header) + 8U];
+    const FSIZE_t end = f_size(f);
+    size_t ln = 0U;
+    bool overflow = false;
+    bool current = false;
+    bool seen = false;
+    if (f_lseek(f, 0U) != FR_OK)
+    {
+        return true;            /* cannot tell: do not add a header */
+    }
+    for (;;)
+    {
+        UINT br = 0U;
+        if ((f_read(f, buf, sizeof(buf), &br) != FR_OK) || (br == 0U))
+        {
+            break;
+        }
+        for (UINT i = 0U; i < br; i++)
+        {
+            const char c = buf[i];
+            if ((c == '\n') || (c == '\r'))
+            {
+                if (ln > 0U)
+                {
+                    line[ln] = '\0';
+                    if (strncmp(line, "schema,", 7U) == 0)
+                    {
+                        seen = true;
+                        current = !overflow && (strcmp(line, k_header) == 0);
+                    }
+                }
+                ln = 0U;
+                overflow = false;
+                continue;
+            }
+            if (ln < (sizeof(line) - 1U))
+            {
+                line[ln++] = c;
+            }
+            else
+            {
+                overflow = true;
+            }
+        }
+    }
+    (void)f_lseek(f, end);
+    return seen ? current : true;
 }
 
 void SessionSummary_Service(void)
@@ -162,12 +223,24 @@ void SessionSummary_Service(void)
     }
     FIL f;
     UINT bw = 0U;
-    FRESULT fr = f_open(&f, SUMMARY_PATH, FA_OPEN_APPEND | FA_WRITE);
+    FRESULT fr = f_open(&f, SUMMARY_PATH, FA_OPEN_APPEND | FA_WRITE | FA_READ);
     if (fr != FR_OK)
     {
         s_error = 0x6100U | ((uint32_t)fr & 0xFFU);
         s_pending = false;             /* do not hammer the card */
         return;
+    }
+    /* A file started under an older schema gets the current header line
+     * before this record; readers re-map columns at every header line. */
+    if ((fr == FR_OK) && (f_size(&f) > 0U) && !lastHeaderIsCurrent(&f))
+    {
+        char hdr[sizeof(k_header) + 64U];
+        const int hn = snprintf(hdr, sizeof(hdr), "# schema %u\r\n%s\r\n",
+                                (unsigned)SESSION_SUMMARY_SCHEMA, k_header);
+        if (hn > 0)
+        {
+            fr = f_write(&f, hdr, (UINT)hn, &bw);
+        }
     }
     if (f_size(&f) == 0U)
     {
