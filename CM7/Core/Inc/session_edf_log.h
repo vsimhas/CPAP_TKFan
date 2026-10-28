@@ -88,6 +88,7 @@ typedef enum
     SESSION_EVT_HYPOPNEA,
     SESSION_EVT_CSR_START,          /* #32: these two go to the CSL file, */
     SESSION_EVT_CSR_END,            /* stamped at their own onset, dur 0  */
+    SESSION_EVT_MASK_OFF,           /* #64: EVE, stamped at its end      */
     SESSION_EVT_COUNT
 } SessionEdfEvent_t;
 

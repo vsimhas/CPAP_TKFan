@@ -37,6 +37,7 @@
 #include "precheck.h"
 #include "circuit_learn.h"
 #include "sensor_cal.h"
+#include "mask_events.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1972,6 +1973,19 @@ static void Telem_ProcessOneCommand(const char *cmd)
     return;
   }
 
+  /* #64: mask-off episodes. */
+  if (strcmp(cmd, "therapy mask") == 0)
+  {
+    Telem_PushAck(cmd);
+    char line[256];
+    const int n = MaskEvents_FormatStatus(line, sizeof(line));
+    if (n > 0)
+    {
+      Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+    }
+    return;
+  }
+
   /* #84: sensor calibration. */
   if (strncmp(cmd, "cal ", 4U) == 0)
   {
@@ -3138,6 +3152,21 @@ static void Telem_ProcessOneCommand(const char *cmd)
       return;
     }
     Telem_PushErr("unknown physio param");
+    return;
+  }
+
+  /* apap breaths - the last 16 breaths the FL / Hyp detector judged (#25). */
+  if (strcmp(cmd, "apap breaths") == 0)
+  {
+    for (uint32_t k = 16U; k > 0U; k--)
+    {
+      char line[192];
+      const int n = Apap_FormatBreath(k - 1U, line, (unsigned)sizeof(line));
+      if (n > 0)
+      {
+        Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+      }
+    }
     return;
   }
 

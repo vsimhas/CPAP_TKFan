@@ -24,6 +24,7 @@
 #include "dbg_log.h"
 #include "precheck.h"
 #include "circuit_learn.h"
+#include "mask_events.h"
 #include "stm32h7xx_hal.h"
 
 #include <math.h>
@@ -1524,6 +1525,7 @@ static void enterMaskOff(uint8_t path)
     s_mask_off_active = true;
     g_therapy_mask_off_active = 1U;
     g_therapy_mask_off_enter_count++;
+    MaskEvents_Off(path);                /* #64 */
     s_mask_off_hold_ms = 0U;
     s_mask_off_active_ms = 0U;
     s_mask_off_hold_elapsed_ms = 0U;
@@ -1585,6 +1587,7 @@ static void exitMaskOff(float dt_s)
     s_mask_off_active = false;
     g_therapy_mask_off_active = 0U;
     g_therapy_mask_on_count++;
+    MaskEvents_On();                     /* #64 */
     s_mask_off_fast_enter_ms = 0U;
     s_mask_off_ratio_enter_ms = 0U;
     s_mask_off_clear_ms = 0U;
@@ -2690,6 +2693,7 @@ static void therapyArm(void)
 
     SessionEdf_OnTherapyStart();
     SessionSummary_OnTherapyStart();
+    MaskEvents_SessionStart();
 
     DBG_I("THR", "start target=%.1f epr=%u lvl=%u exp=%.1f cmH2O ramp=%u min",
           (double)s_session_target_cmh2o,
@@ -2727,6 +2731,7 @@ void Therapy_Stop(void)
     Leak_SetSessionActive(false);
     Leak_Reseed(); /* drop leftover vent/leak LPF so idle Q_patient stays quiet */
     Flow_AutoZeroArm(); /* one quiet-mean slew after stop; never snap */
+    MaskEvents_SessionEnd();   /* #64: before the EVE file closes */
     SessionEdf_OnTherapyStop();
 
     /* Drop PID control immediately so the motor coasts down rather than
@@ -2784,6 +2789,7 @@ void Therapy_Update(float dt_s)
     Epr_Update(Apap_FilterBreathFlow(Flow_GetPatientSlm(), dt_s),
                BlowerCtrl_GetMeasured(), therapyBaseSetpointCmh2o(), dt_s);
     SessionEdf_Update(dt_s);
+    MaskEvents_Update(dt_ms);            /* #64: hold a mask-on 20 s */
 
     if (Therapy_GetFault() != THERAPY_FAULT_NONE)
     {

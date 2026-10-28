@@ -2127,6 +2127,124 @@ section.
 - **No obstructive apnea yet:** the chamber-squeezed obstructive apnea has not been
   tested, on ours or on the AirSense.
 
+### #25: flattened hypopneas at 4 cmH₂O classed central (27–28 October) — OPEN
+
+**Symptom.** In the AutoRamp `events` run (27 October, `autoramp_events.log`),
+flattened 55 % hypopneas at 4 cmH₂O with 25 % breath jitter were scored as hypopneas
+but classed central (no FL). The same script at 8 cmH₂O without jitter classes them
+obstructive. AutoRamp (#38) counts every hypopnea for this reason.
+
+**Method.**
+
+- **Detector's own view:** new read-only breath log, `apap breaths`. It holds the last
+  16 breaths the FL / Hyp detector judged: peak, baseline, flatness, dip, whether the
+  inspiratory segment was clean, and the FL-shape and hyp-limited flags.
+- **Harness:** `cpap_hyp_lowp.py` in BreathSimulator `pc_tools/apap_bench`.
+  - CPAP mode with scoring, at 4 and 8 cmH₂O, each with simulator jitter 0 % and 25 %.
+  - Each case: 40 s of normal breathing, then two 25 s 55 % hypopneas with
+    `flattening 0.9`.
+- **Simulator caution:** on 28 October the simulator's motor stalled — command
+  8000 rpm, measured 0. Its segment field still stepped through `Insp`. The first
+  two sweeps were therefore void. A simulator power cycle fixed it, and the harness
+  now requires measured rotation before a case.
+
+**Result, default build** (`rel_baseline 0`):
+
+| case | hypopnea breaths called FL | their flatness | verdict |
+|---|---|---|---|
+| 8 cmH₂O, jitter 0 | 9 of 11 | 0.71–0.75 | obstructive ✓ |
+| 8 cmH₂O, jitter 25 % | 9 of 10 | 0.69–0.80 | obstructive ✓ |
+| 4 cmH₂O, jitter 0 | 5 of 10 | 0.62–0.76 | central ✗ |
+| 4 cmH₂O, jitter 25 % | 3 of 8 | 0.62–0.77 | central ✗ |
+
+- **The cause is pressure, not jitter.**
+- **Not segmentation:** every hypopnea breath had a clean segment from the floor.
+- **Wrong breaths in the table:** the breath log survives across sessions, so the
+  first poll of each case also picked up a few breaths from the previous case. The
+  harness now counts only the session's own breaths, and the verdicts above stand.
+
+**Where the shape goes** (`cpap_flat_ext.py`):
+
+- **Method:** the same breaths' flatness from our patient flow (`T` line) and from
+  the external sensor (COM4, at the lung, downstream of the vent).
+- **Plot:** `cpap_flat_ext_waveforms.png`.
+
+| breath | COM4, 4 / 8 cmH₂O | our patient flow, 4 / 8 cmH₂O |
+|---|---|---|
+| round, full | 0.52 / 0.55 | 0.68–0.69 / 0.64 |
+| flattened, full | 0.61 / 0.64 | 0.81 / 0.78–0.79 |
+| flattened, 55 % hypopnea | 0.62 / 0.68 | 0.71–0.74 / 0.74–0.77 |
+
+- **COM4 is not the lung's truth either.** Between breaths it sits at about
+  **+5 L/min**, the simulator box leak downstream of it. That plateau drags its
+  above-zero flatness down.
+- **The waveforms have the same shape.** Our patient flow ≈ COM4 shifted down: its
+  expiratory pause sits at about **−3 L/min**, where COM4 sits at +5.
+  - This is the R9/R10 offset: patient flow is made zero-mean by the leak / vent
+    model, and the model subtracts too much when breaths are small.
+  - Peaks: ours about 17 L/min, COM4 about 26 L/min.
+- **The simulator does not deliver a plateau.**
+  - `flattening 0.9` commands a near-square breath (its own mean/peak is about 0.88).
+  - At the lung it arrives as a ramp with a late peak, flatness 0.61–0.68. The test
+    stimulus is a weak "flattened" breath.
+
+**Cause.**
+
+- The FL detector measures each breath against **0 L/min**: the segment runs from
+  the floor (0) upward, and flatness is mean/peak above it.
+- With the pause at −3 L/min, it judges only the top cap of each breath. On a small
+  hypopnea breath (peak 7–8 L/min) the cap is most of what is left, and its
+  flatness depends on where zero falls in it — that is, on the leak / vent offset.
+- That offset shifts with pressure. At 4 cmH₂O the round-to-flattened difference in
+  our signal shrank to 0.02–0.06, against 0.10–0.13 at 8. No single flatness
+  threshold separates the two.
+
+**Tried: `apap set rel_baseline 1`** (measure against the EPR flow baseline; off
+since R10):
+
+| case | Hyp | FL breaths | verdict |
+|---|---|---|---|
+| 4 cmH₂O, jitter 25 % | 2 | 4 of 6 | obstructive |
+| 4 cmH₂O, jitter 0 | 2 | 5 of 10 | central — 1st event 5/5 FL, 2nd 0/5 |
+| 8 cmH₂O, jitter 0 | **1** (one missed) | 6 of 8 | obstructive |
+| 8 cmH₂O, jitter 25 % | 2 | 7 of 8 | obstructive |
+
+- **Not a fix:** it is inconsistent within one case, and it lost a hypopnea at
+  8 cmH₂O — the same failure as R9 / trial 7f. Left at 0.
+
+**The catch for any per-breath zero.**
+
+- Measured from the pause level, a 55 % hypopnea in our signal is about
+  (7.5 + 3) / (17 + 3) ≈ **0.52** of normal. At the lung it is about
+  (14.3 − 5) / (26 − 5) ≈ **0.44**.
+- So our flow reading over-reads small breaths relative to large ones (scale, not
+  just offset). Re-zeroing each breath would push 55 % hypopneas above the 0.50
+  hypopnea line — fewer hypopneas scored.
+- The offset and the scale need fixing together, or the hypopnea rule re-tuned with
+  them.
+
+**Options (not started):**
+
+1. **Per-breath zero:** measure each breath from the flow level in the expiratory
+   pause just before it, for both FL and Hyp. Then re-tune the hypopnea ratio and
+   re-run the trial 8c / threshold / flshape scripts for regressions.
+2. **Flow linearity first:** check flow-element linearity at low flow against COM4
+   with the box leak subtracted. The patient-flow offset and the small-breath scale
+   both come through it.
+3. **Leave it:** keep counting every hypopnea for AutoRamp, and record that the
+   obstructive / central split of mildly flattened hypopneas is unreliable below
+   about 5 cmH₂O.
+
+**Logs:** BreathSimulator `pc_tools/apap_bench/runs/`:
+
+- **Default-build sweep:** `cpap_hyp_lowp_console3.txt`
+  (+ `cpap_hyp_lowp_20261028_122245.log`).
+- **`rel_baseline 1` sweep:** `cpap_hyp_lowp_console_relbase.txt`
+  (+ `cpap_hyp_lowp_20261028_125220.log`).
+- **Flatness comparison:** `cpap_flat_ext_20261028_12{3853,4542}.*`, the latter with
+  the raw telemetry, plus `cpap_flat_ext_waveforms.png`.
+- **Void runs (stalled simulator):** `cpap_hyp_lowp_console{,2}.txt`.
+
 ## Evidence
 
 - **Logs:** BreathSimulator session scratchpad,

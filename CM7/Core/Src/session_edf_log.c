@@ -185,7 +185,8 @@ static volatile uint8_t s_eve_q_tail = 0U;   /* consumer: Service */
 static volatile uint32_t s_ticks = 0U;       /* BRP samples since open */
 
 static const char * const k_eve_text[SESSION_EVT_COUNT] = {
-    "Obstructive Apnea", "Central Apnea", "Hypopnea", "CSR Start", "CSR End"
+    "Obstructive Apnea", "Central Apnea", "Hypopnea", "CSR Start", "CSR End",
+    "Mask Off"
 };
 
 static uint16_t crc16CcittFalse(const uint8_t *p, uint32_t n)
@@ -360,7 +361,8 @@ static void eveService(void)
         {
             continue;
         }
-        const bool csl = (it.type >= (uint8_t)SESSION_EVT_CSR_START);
+        const bool csl = (it.type == (uint8_t)SESSION_EVT_CSR_START)
+                      || (it.type == (uint8_t)SESSION_EVT_CSR_END);
         AnnFile_t *f = csl ? &s_csl : &s_eve;
         if (f->open == 0U)
         {

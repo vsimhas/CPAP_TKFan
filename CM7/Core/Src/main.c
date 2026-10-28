@@ -51,6 +51,7 @@
 #include "precheck.h"
 #include "circuit_learn.h"
 #include "sensor_cal.h"
+#include "mask_events.h"
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
@@ -2916,6 +2917,7 @@ static void SelfTestTask(void *argument)
     FaultLog_Service();         /* #86: drive faults + FAULTS.CSV */
     CircuitLearn_Service();     /* #85: CIRCUIT.CSV log + reload */
     Cal_Service();              /* #84: CAL.CSV log + reload */
+    MaskEvents_Service();       /* #64: MASK.CSV */
 
     if (sdram_test_step != 100U)
     {

@@ -685,8 +685,19 @@ airflow to *sense* a reconnection.
    for 2 seconds. This reads no flow at all, so it still works when the flow
    signal is unusable or when the event is too small for the 45 slm threshold.
 
-All three require the pressure to have actually collapsed, so a strong
-inhalation cannot trigger a mask-off.
+Two more were added later:
+
+4. **RPM-ratio path.** Commanded RPM far above what the square-law model needs
+   for the setpoint, held for 2.5 s — the backstop when the blower is at its
+   ceiling and nothing else has fired.
+5. **Sustained-flow path.** The 3 s mean of total flow at least 50 slm above
+   the vent reference, held 500 ms, with no pressure condition. Added for the
+   ~150 slm flow element, where an open circuit at 12 cmH₂O still read 157 slm
+   at the sensor while the blower held pressure.
+
+Paths 1–3 require the pressure to have actually collapsed, so a strong
+inhalation cannot trigger a mask-off; path 5 relies on a 3 s mean that a
+breath cannot sustain.
 
 **Why the third path exists.** A mask lifted off the face is a much smaller
 event than a hose disconnect: the vent orifice limits the flow. Measured on this
@@ -712,14 +723,28 @@ feed-forward for 3 seconds (the leak estimator is re-seeding and briefly
 mistakes hose-filling flow for the patient), reset the breath state, and give
 the safety supervisor a 12 second grace while the pressure climbs back.
 
-**Known limitation.** Detection is reliable from about 5 cmH₂O upwards and gets
-better as the setpoint rises. At the very bottom of the range it degrades,
-because the open-circuit pressure is set by the blower's speed limit and the
-circuit — not by the setpoint — so at a setpoint of 4 the difference between
-"mask on" and "mask off" is only about 1.5 cmH₂O. A pressure-based test cannot
-reliably separate those. The robust fix is to compare commanded RPM against the
-RPM the square-law model says *should* deliver this pressure, which is
-independent of the pressure scale; that is not implemented yet.
+**Low pressures (checklist #16).** The pressure-based paths degrade at the
+bottom of the range — at a setpoint of 4 the difference between "mask on" and
+"mask off" is only about 1.5 cmH₂O. Path 5 does not use pressure, and it closes
+that gap. Bench, 2026-10-28, real pulls (circuit opened right after the vent,
+simulator stopped), the times measured from the pressure drop in the
+telemetry, not from a cue:
+
+| setpoint | detected after | path | mask-on |
+|---|---|---|---|
+| 4 cmH₂O | 1.7 s | 5 | at the reconnect |
+| 8 cmH₂O | 1.7 s | 5 | at the reconnect |
+| 12 cmH₂O | 1.7 s | 5 | at the reconnect |
+
+In that 1.7 s the loop still drives the blower to hold pressure: at 4 cmH₂O
+the device-side sensor reached 9.5 cmH₂O at ~153 slm before the park.
+
+**Logging (checklist #64).** Every episode is kept, not just the session total:
+a row in `MASK.CSV` (off / on times, seconds into the session, duration, the
+path that fired, ended by mask-on or by stop) and a "Mask Off" annotation in
+the session's EVE file (`mask_events.c`). A mask-on is held 20 s before it is
+written, so a reconnect that fails the probation check and re-parks continues
+the same episode instead of logging two.
 
 ---
 

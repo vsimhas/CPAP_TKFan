@@ -1119,6 +1119,30 @@ static float segDipRatio(void)
     return (hump > 0.5f) ? clampf(valley / hump, 0.0f, 1.0f) : 1.0f;
 }
 
+/* #25: the last breaths the FL / hypopnea detector judged, for
+ * `apap breaths` - what each one looked like and what it was called. */
+#define BREATH_LOG_N  16U
+typedef struct
+{
+    uint32_t seq;
+    uint32_t t_ms;           /* session clock */
+    uint16_t insp_ms;
+    uint16_t period_ms;
+    float    peak;
+    float    base;           /* FL / Hyp baseline before this breath */
+    float    flat;
+    float    dip;
+    uint8_t  flags;          /* see BL_* */
+} BreathLog_t;
+#define BL_SHAPE_OK   0x01U  /* clean segment from the floor */
+#define BL_FROM_FLOOR 0x02U
+#define BL_OVERFLOW   0x04U
+#define BL_FL_SHAPE   0x08U
+#define BL_HYP_LIM    0x10U
+#define BL_SMALL      0x20U  /* under fl_min_peak: not judged */
+static BreathLog_t s_blog[BREATH_LOG_N];
+static uint32_t    s_blog_n = 0U;
+
 static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
                                bool shape_ok)
 {
@@ -1170,8 +1194,22 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
         s_fl_index_age_ms = 0U;
     }
 
+    BreathLog_t *bl = &s_blog[s_blog_n % BREATH_LOG_N];
+    bl->seq = ++s_blog_n;
+    bl->t_ms = HAL_GetTick();
+    bl->insp_ms = (uint16_t)((s_insp_ms > 65535U) ? 65535U : s_insp_ms);
+    bl->period_ms = (uint16_t)((approx_breath_ms > 65535U) ? 65535U : approx_breath_ms);
+    bl->peak = peak_slm;
+    bl->base = s_fl_baseline_slm;
+    bl->flat = s_fl_last_flat;
+    bl->dip = s_fl_last_dip;
+    bl->flags = (uint8_t)((shape_ok ? BL_SHAPE_OK : 0U)
+                        | (s_fl_seg_from_floor ? BL_FROM_FLOOR : 0U)
+                        | (s_fl_seg_overflow ? BL_OVERFLOW : 0U));
+
     if (!(peak_slm >= min_peak))
     {
+        bl->flags |= BL_SMALL;
         return;
     }
 
@@ -1204,6 +1242,7 @@ static void finalizeInspBreath(float peak_slm, uint32_t approx_breath_ms,
                          || (fl_peak_drop && (g_apap_fl_amp_arm_enable != 0U));
     const bool baseline_hold = fl_shape || fl_peak_drop;
     const bool hyp_limited = (peak_slm < (hyp_ratio * s_fl_baseline_slm));
+    bl->flags |= (uint8_t)((fl_shape ? BL_FL_SHAPE : 0U) | (hyp_limited ? BL_HYP_LIM : 0U));
     if (!hyp_limited)
     {
         s_apnea_need_recovery = false;   /* R4: breathing recovered */
@@ -2022,6 +2061,27 @@ float Apap_GetSessionFlIndexP95(void)
 
 uint32_t Apap_GetSessionFlSeconds(void)    { return s_sess_fl_ms / 1000U; }
 uint32_t Apap_GetSessionSnoreSeconds(void) { return s_sess_snore_ms / 1000U; }
+
+int Apap_FormatBreath(uint32_t k, char *buf, unsigned len)
+{
+    if ((buf == NULL) || (k >= s_blog_n) || (k >= BREATH_LOG_N))
+    {
+        return 0;
+    }
+    const BreathLog_t *b = &s_blog[(s_blog_n - 1U - k) % BREATH_LOG_N];
+    const int n = snprintf(buf, len,
+        "# BR seq=%lu t=%lu ti=%u T=%u pk=%.1f base=%.1f flat=%.3f dip=%.3f ok=%u "
+        "floor=%u ovf=%u fl=%u hyp=%u small=%u\r\n",
+        (unsigned long)b->seq, (unsigned long)b->t_ms, (unsigned)b->insp_ms,
+        (unsigned)b->period_ms, (double)b->peak, (double)b->base, (double)b->flat,
+        (double)b->dip, (unsigned)((b->flags & BL_SHAPE_OK) ? 1U : 0U),
+        (unsigned)((b->flags & BL_FROM_FLOOR) ? 1U : 0U),
+        (unsigned)((b->flags & BL_OVERFLOW) ? 1U : 0U),
+        (unsigned)((b->flags & BL_FL_SHAPE) ? 1U : 0U),
+        (unsigned)((b->flags & BL_HYP_LIM) ? 1U : 0U),
+        (unsigned)((b->flags & BL_SMALL) ? 1U : 0U));
+    return ((n > 0) && ((unsigned)n < len)) ? n : 0;
+}
 
 int Apap_FormatDiag(char *buf, unsigned len)
 {

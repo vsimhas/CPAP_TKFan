@@ -62,6 +62,9 @@ float      Apap_Update(float dt_s, uint8_t therapy_state, bool mask_off);
 float      Apap_FilterBreathFlow(float q_slm, float dt_s);
 /* R11: "apap diag" text (two "# ..." lines); returns length, 0 on overflow. */
 int        Apap_FormatDiag(char *buf, unsigned len);
+/* #25: k-th most recent breath the FL / Hyp detector judged ("# BR ...");
+ * 0 when there is no such breath. */
+int        Apap_FormatBreath(uint32_t k, char *buf, unsigned len);
 
 float      Apap_GetTargetPressure(void);
 ApapState_t Apap_GetState(void);

@@ -1067,6 +1067,11 @@
               <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
             </File>
             <File>
+              <FileName>mask_events.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\mask_events.c</FilePath>
+            </File>
+            <File>
               <FileName>sensor_cal.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\sensor_cal.c</FilePath>
@@ -4978,6 +4983,11 @@
               <FileName>watchdog.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\CM7\Core\Src\watchdog.c</FilePath>
+            </File>
+            <File>
+              <FileName>mask_events.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\CM7\Core\Src\mask_events.c</FilePath>
             </File>
             <File>
               <FileName>sensor_cal.c</FileName>

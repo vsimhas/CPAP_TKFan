@@ -189,6 +189,18 @@ At boot, and whenever a card is inserted while therapy is idle, the last row wit
 `applied = 1` is loaded into tube compensation (`circuit status` then shows
 `use=card`). `circuit restore 0` skips that.
 
+## Mask-off episodes: `0:/MASK.CSV` (checklist #64)
+
+One row per mask-off episode, written when it closes: `schema, session_start
+(as in SUMMARY.CSV), rtc_valid, off_time, off_s, on_time, on_s, dur_s, path
+(flow | ratio | pressure | rpm_ratio | sustained | probation), end (mask_on |
+stop)`. `off_s` / `on_s` are seconds into the session, so they are usable even
+when the clock was not set. The same episode is also a "Mask Off" annotation
+(stamped at its end, with its duration) in the session's `_EVE.edf`; OSCAR
+ignores annotation names it does not know. A mask-on is held 20 s before the
+row is written, so a reconnect that is re-parked by the probation check stays
+one episode. `therapy mask` prints the last one.
+
 ## Calibration log: `0:/CAL.CSV` (checklist #84)
 
 One row per calibration change, applied or refused: the learned device-pressure
