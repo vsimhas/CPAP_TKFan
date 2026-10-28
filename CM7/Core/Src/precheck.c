@@ -312,6 +312,7 @@ bool Precheck_SpinVerdict(PrecheckSpin_t *out)
         r.fail = s_inject;
         r.injected = true;
     }
+    r.seq = s_last_spin.seq + 1U;
     s_last_spin = r;
     s_last_fail = r.fail;
     if (out != NULL)

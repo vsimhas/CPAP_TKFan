@@ -52,6 +52,7 @@
 #include "circuit_learn.h"
 #include "sensor_cal.h"
 #include "mask_events.h"
+#include "service_reminders.h"
 #include "rtc_clock.h"
 #include "session_summary.h"
 #include "adherence.h"
@@ -2557,6 +2558,7 @@ static void SensorTask(void *argument)
     /* ---------- Therapy management (before PID so EPR setpoint is current) --- */
     Therapy_Update(dt_s);
     CircuitLearn_Update(period_ms);   /* #85: learn-circuit run (therapy idle) */
+    Service_Update(period_ms);        /* #87: spin residual per therapy start */
     PhysioTelem_Update(dt_s);
 
     /* ---------- Outer-loop pressure PID ---------- */
@@ -2918,6 +2920,7 @@ static void SelfTestTask(void *argument)
     CircuitLearn_Service();     /* #85: CIRCUIT.CSV log + reload */
     Cal_Service();              /* #84: CAL.CSV log + reload */
     MaskEvents_Service();       /* #64: MASK.CSV */
+    Service_Service();          /* #87: SERVICE.CSV (after Adherence_Service) */
 
     if (sdram_test_step != 100U)
     {

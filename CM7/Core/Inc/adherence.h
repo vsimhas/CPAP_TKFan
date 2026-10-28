@@ -42,6 +42,9 @@ void     Adherence_Service(void);
 void     Adherence_OnRecordWritten(const char *csv_line);
 
 bool     Adherence_IsBuilt(void);
+/* #87: total blower run time of every session on the card (run_s), dated
+ * or not - the device's usage hours for the service reminders. */
+uint64_t Adherence_GetRunSeconds(void);
 /* "# ADH ..." status line, CRLF-terminated. Returns its length, 0 if too long. */
 int      Adherence_Format(char *buf, unsigned len);
 

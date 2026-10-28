@@ -19,6 +19,7 @@ extern "C" {
     #include "diagnostics_data.h"
     #include "therapy.h"
     #include "epr_ctrl.h"
+    #include "service_reminders.h"   /* #87 */
 }
 
 using namespace touchgfx;
@@ -390,6 +391,32 @@ void screenView::handleTickEvent()
         {
             renderTherapyPage();
         }
+        else if (cpap::getMenu().page() == cpap::Page::WELCOME)
+        {
+            /* #87: the reminder appears once the card has been read. */
+            renderWelcomePage();
+            welcome_sub_text_.invalidate();
+        }
+        else if (cpap::getMenu().page() == cpap::Page::SUPPLIES)
+        {
+            /* #87: only the state column changes on its own (over hours),
+             * so redraw a value only when its text changed. Re-rendering
+             * and invalidating the whole page every second flickered. */
+            static char s_last[kMaxRows][24];
+            cpap::MenuController& m = cpap::getMenu();
+            for (uint8_t r = 0; r < row_visible_count_; ++r)
+            {
+                const char* val = m.itemValue((uint8_t)(list_scroll_offset_ + r));
+                if ((val != nullptr) && (strncmp(val, s_last[r], sizeof(s_last[r]) - 1U) != 0))
+                {
+                    (void)strncpy(s_last[r], val, sizeof(s_last[r]) - 1U);
+                    s_last[r][sizeof(s_last[r]) - 1U] = '\0';
+                    utf8ToBuf(val, row_value_buf_[r],
+                              sizeof(row_value_buf_[r]) / sizeof(row_value_buf_[r][0]));
+                    row_value_[r].invalidate();
+                }
+            }
+        }
         else if (cpap::getMenu().page() == cpap::Page::LEARN_TUBE)
         {
             /* #85: step / result of the learn-circuit run. */
@@ -637,6 +664,7 @@ void screenView::renderCurrentPage()
     case Page::HOME:
     case Page::MY_OPTIONS:
     case Page::MORE:
+    case Page::SUPPLIES:
         renderListPage();
         break;
     case Page::VALUE_THERAPY_MODE:
@@ -660,6 +688,7 @@ void screenView::renderCurrentPage()
     case Page::MY_SLEEP_VIEW:
     case Page::MASK_FIT:
     case Page::LEARN_TUBE:
+    case Page::SUPPLY_CONFIRM:
     case Page::MYAIR:
         renderInfoPage();
         break;
@@ -773,6 +802,7 @@ void screenView::renderInfoPage()
     case Page::MY_SLEEP_VIEW: big = "Sleep view (placeholder)"; break;
     case Page::MASK_FIT:      big = "Mask Fit check";           break;
     case Page::LEARN_TUBE:    big = m.learnTubeText();          break;
+    case Page::SUPPLY_CONFIRM: big = m.supplyConfirmText();     break;
     case Page::MYAIR:         big = "myAir / Bluetooth";        break;
     default:                  big = "";                         break;
     }
@@ -792,9 +822,19 @@ void screenView::renderWelcomePage()
     welcome_big_text_.setColor(kColText);
     welcome_big_text_.setVisible(true);
 
-    utf8ToBuf("Press the knob to begin", welcome_sub_buf_,
+    /* #87: name what is due; the full list is under MORE > Supplies. */
+    const char* sub = "Press the knob to begin";
+    char due[40];
+    if (Service_AnyDue())
+    {
+        const char* items = Service_DueText();
+        const int n = snprintf(due, sizeof(due), "Replace: %s", items);
+        sub = ((n > 0) && (static_cast<size_t>(n) < sizeof(due)))
+                  ? due : "Supplies due: see MORE > Supplies";
+    }
+    utf8ToBuf(sub, welcome_sub_buf_,
               sizeof(welcome_sub_buf_) / sizeof(welcome_sub_buf_[0]));
-    welcome_sub_text_.setColor(kColTextDim);
+    welcome_sub_text_.setColor(Service_AnyDue() ? kColText : kColTextDim);
     welcome_sub_text_.setVisible(true);
 }
 

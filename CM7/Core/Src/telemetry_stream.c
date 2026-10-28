@@ -38,6 +38,7 @@
 #include "circuit_learn.h"
 #include "sensor_cal.h"
 #include "mask_events.h"
+#include "service_reminders.h"
 
 #include "usbd_def.h"
 #include "usbd_cdc.h"
@@ -1970,6 +1971,66 @@ static void Telem_ProcessOneCommand(const char *cmd)
     }
     g_precheck_enable = (uint8_t)v;
     Telem_PushAck(cmd);
+    return;
+  }
+
+  /* #87: supplies / service reminders. */
+  if (strncmp(cmd, "service ", 8U) == 0)
+  {
+    const char *a = &cmd[8];
+    bool ok = true;
+    if (strcmp(a, "status") == 0)
+    {
+      /* status only */
+    }
+    else if (strncmp(a, "replaced ", 9U) == 0)
+    {
+      if (strcmp(&a[9], "all") == 0)
+      {
+        for (uint32_t i = 0U; i < (uint32_t)SVC_COUNT; i++)
+        {
+          Service_Replaced((SvcItem_t)i);
+        }
+      }
+      else
+      {
+        const SvcItem_t it = Service_ParseItem(&a[9]);
+        ok = (it != SVC_COUNT);
+        if (ok) { Service_Replaced(it); }
+      }
+    }
+    else if (strcmp(a, "test none") == 0)
+    {
+      Service_SetTest(0.0f, 0, 0.0f);
+    }
+    else if ((strncmp(a, "test hours ", 11U) == 0) || (strncmp(a, "test days ", 10U) == 0)
+             || (strncmp(a, "test spin ", 10U) == 0))
+    {
+      float fv = 0.0f;
+      long lv = 0;
+      if (a[5] == 'h')      { ok = Telem_ParseFloat(&a[11], &fv); if (ok) { Service_SetTestHours(fv); } }
+      else if (a[5] == 'd') { ok = Telem_ParseLong(&a[10], &lv);  if (ok) { Service_SetTestDays((int32_t)lv); } }
+      else                  { ok = Telem_ParseFloat(&a[10], &fv); if (ok) { Service_SetTestSpin(fv); } }
+    }
+    else
+    {
+      ok = false;
+    }
+    if (!ok)
+    {
+      Telem_PushErr("service status|replaced <filter|cushion|mask|tube|chamber|all>|test ...");
+      return;
+    }
+    Telem_PushAck(cmd);
+    for (uint32_t k = 0U; k < ((uint32_t)SVC_COUNT + 2U); k++)
+    {
+      char line[200];
+      const int n = Service_FormatStatus(k, line, sizeof(line));
+      if (n > 0)
+      {
+        Telem_BufPush((const uint8_t *)line, (uint32_t)n);
+      }
+    }
     return;
   }
 

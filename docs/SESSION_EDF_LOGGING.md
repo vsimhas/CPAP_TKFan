@@ -201,6 +201,39 @@ ignores annotation names it does not know. A mask-on is held 20 s before the
 row is written, so a reconnect that is re-parked by the probation check stays
 one episode. `therapy mask` prints the last one.
 
+## Supplies / service log: `0:/SERVICE.CSV` (checklist #87)
+
+Columns: `schema, time, rtc_valid, uptime_s, event, item, run_h, value`.
+
+- `event`:
+  - `replaced`: from MORE > Supplies or `service replaced <item|all>`.
+  - `start`: the first time an item is seen on this card; its clock starts then.
+  - `spin`: one per therapy start; `value` is the #83 spin check's device
+    pressure minus the fan map at 12000 rpm.
+- `item`: filter, cushion, mask, tube or chamber.
+- `run_h`: the device's usage hours at that moment — blower run time of every
+  session in `SUMMARY.CSV`, plus the session running then.
+
+An item is due on hours or calendar days, whichever comes first:
+
+| item | days | hours (at 8 h a night) |
+|---|---|---|
+| filter, mask cushion | 30 | 240 |
+| mask, tube | 90 | 720 |
+| water chamber | 180 | 1440 |
+
+- **Soon:** at 90 % of either limit.
+- **Filter blockage:** the filter is also due when the median of its last 3 spin
+  values is 0.5 cmH₂O or more below the median of the first 3 after it was
+  replaced.
+- **Reload:** the file is read again when a card is mounted, after `SUMMARY.CSV`.
+- **No card:** no reminders, because there is nothing to count from.
+
+`service status` prints each item, the blockage reference and the hours. Bench
+offsets `service test hours|days|spin <v>` only change what is shown; replacing
+an item while an offset is set stamps it with the offset included, so clear them
+(`service test none`) before real use.
+
 ## Calibration log: `0:/CAL.CSV` (checklist #84)
 
 One row per calibration change, applied or refused: the learned device-pressure

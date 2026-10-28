@@ -26,6 +26,7 @@ typedef struct
     int col_start;
     int col_valid;
     int col_on;
+    int col_run;         /* run_s: blower hours, dated or not (#87) */
 } AdhCols_t;
 
 /* Per-night usage for the recent window (ring keyed by day number) and for
@@ -38,9 +39,10 @@ static int32_t  s_last_day = ADH_NO_DAY;
 static uint32_t s_sessions = 0U;
 static uint32_t s_undated = 0U;
 static uint64_t s_total_s = 0U;
+static uint64_t s_run_all_s = 0U;   /* every record's run_s, dated or not */
 static bool     s_built = false;
 static uint32_t s_error = 0U;
-static AdhCols_t s_own_cols = { -1, -1, -1 };
+static AdhCols_t s_own_cols = { -1, -1, -1, -1 };
 
 /* Days since 1970-01-01 for a civil date (H. Hinnant's algorithm). */
 static int32_t daysFromCivil(int32_t y, int32_t m, int32_t d)
@@ -85,6 +87,7 @@ static void reset(void)
     s_sessions = 0U;
     s_undated = 0U;
     s_total_s = 0U;
+    s_run_all_s = 0U;
 }
 
 static uint32_t ringGet(int32_t day)
@@ -150,7 +153,7 @@ static int splitFields(char *p, char *f[], int max)
 /* Column indices from a CSV header line (by name, not position). */
 static AdhCols_t parseHeader(const char *line)
 {
-    AdhCols_t c = { -1, -1, -1 };
+    AdhCols_t c = { -1, -1, -1, -1 };
     char tmp[ADH_LINE_MAX];
     char *f[ADH_MAX_FIELDS];
     (void)strncpy(tmp, line, sizeof(tmp) - 1U);
@@ -161,6 +164,7 @@ static AdhCols_t parseHeader(const char *line)
         if (strcmp(f[i], "start") == 0)     { c.col_start = i; }
         if (strcmp(f[i], "rtc_valid") == 0) { c.col_valid = i; }
         if (strcmp(f[i], "mask_on_s") == 0) { c.col_on = i; }
+        if (strcmp(f[i], "run_s") == 0)     { c.col_run = i; }
     }
     return c;
 }
@@ -181,6 +185,11 @@ static void addRecord(const char *line, const AdhCols_t *c)
         return;
     }
     s_sessions++;
+    if ((c->col_run >= 0) && (c->col_run < n))
+    {
+        const long run = strtol(f[c->col_run], NULL, 10);
+        s_run_all_s += (run > 0) ? (uint64_t)run : 0U;
+    }
     unsigned y = 0U, mo = 0U, d = 0U, hh = 0U, mi = 0U, ss = 0U;
     const bool valid = (atoi(f[c->col_valid]) == 1)
                     && (sscanf(f[c->col_start], "%u-%u-%u %u:%u:%u",
@@ -226,7 +235,7 @@ static void rebuild(void)
     static char line[ADH_LINE_MAX];
     uint32_t ll = 0U;
     bool overlong = false;
-    AdhCols_t c = { -1, -1, -1 };
+    AdhCols_t c = { -1, -1, -1, -1 };
     bool have_header = false;
 
     reset();
@@ -311,6 +320,11 @@ void Adherence_OnRecordWritten(const char *csv_line)
         s_own_cols = parseHeader(SessionSummary_GetHeaderLine());
     }
     addRecord(csv_line, &s_own_cols);
+}
+
+uint64_t Adherence_GetRunSeconds(void)
+{
+    return s_run_all_s;
 }
 
 bool Adherence_IsBuilt(void)

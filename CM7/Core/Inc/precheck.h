@@ -122,6 +122,7 @@ typedef struct
     float          q_mean;        /* L/min */
     float          p_std;
     float          q_std;
+    uint32_t       seq;           /* verdicts so far (#87: one log per start) */
 } PrecheckSpin_t;
 
 /* Spin check, driven by therapy.c: command, settle / sample window, verdict. */

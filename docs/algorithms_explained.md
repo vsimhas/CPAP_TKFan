@@ -954,6 +954,7 @@ two to three times more Kp and Ki.
 | Mask pressure estimate | `CM7/Core/Src/tube_comp.c` |
 | Learn circuit (tube resistance) | `CM7/Core/Src/circuit_learn.c` |
 | Sensor zero / span, CAL.CSV | `CM7/Core/Src/sensor_cal.c` |
+| Supplies reminders, SERVICE.CSV | `CM7/Core/Src/service_reminders.c` |
 | Flow conditioning | `CM7/Core/Src/flow_sensor.c` |
 | Leak estimation | `CM7/Core/Src/leak_estimator.c`, `leak_estimator_vivo.c` |
 | Therapy states, mask-off | `CM7/Core/Src/therapy.c` |

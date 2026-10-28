@@ -6,6 +6,7 @@
 
 #include "therapy.h"   /* C therapy state machine; called on START/STOP    */
 #include "circuit_learn.h" /* #85: MORE > Learn Tube                         */
+#include "service_reminders.h" /* #87: MORE > Supplies                       */
 
 #include <stdio.h>
 
@@ -61,9 +62,21 @@ const ListItem k_more_items[] = {
     { "<- Back",           Page::HOME,                Mode::LIST },
     { "Mask Fit",          Page::MASK_FIT,            Mode::INFO },
     { "Learn Tube",        Page::LEARN_TUBE,          Mode::INFO },
+    { "Supplies",          Page::SUPPLIES,            Mode::LIST },
     { "Airplane Mode",     Page::VALUE_AIRPLANE_MODE, Mode::VALUE_EDIT },
     { "myAir / Bluetooth", Page::MYAIR,               Mode::INFO },
     { "Diagnostics",       Page::DIAGNOSTICS,         Mode::INFO },
+};
+
+/* SUPPLIES submenu (#87): one row per consumable, in SvcItem_t order after
+ * the Back row; a click asks to confirm it was replaced. */
+const ListItem k_supplies_items[] = {
+    { "<- Back",           Page::MORE,                Mode::LIST },
+    { "Filter",            Page::SUPPLY_CONFIRM,      Mode::INFO },
+    { "Mask cushion",      Page::SUPPLY_CONFIRM,      Mode::INFO },
+    { "Mask",              Page::SUPPLY_CONFIRM,      Mode::INFO },
+    { "Tube",              Page::SUPPLY_CONFIRM,      Mode::INFO },
+    { "Water chamber",     Page::SUPPLY_CONFIRM,      Mode::INFO },
 };
 
 /* True if a list page's row 0 is a "<- Back" pseudo-item. Used by the view
@@ -71,7 +84,7 @@ const ListItem k_more_items[] = {
  * the index of the first real item. */
 bool listHasBackRow(Page p)
 {
-    return (p == Page::MY_OPTIONS) || (p == Page::MORE);
+    return (p == Page::MY_OPTIONS) || (p == Page::MORE) || (p == Page::SUPPLIES);
 }
 
 template <size_t N>
@@ -93,6 +106,9 @@ const ListItem* itemsForPage(Page p, uint8_t& out_count)
     case Page::MORE:
         out_count = arrLen(k_more_items);
         return k_more_items;
+    case Page::SUPPLIES:
+        out_count = arrLen(k_supplies_items);
+        return k_supplies_items;
     default:
         out_count = 0;
         return nullptr;
@@ -122,9 +138,12 @@ Page parentList(Page p)
     case Page::VALUE_AIRPLANE_MODE:
     case Page::MASK_FIT:
     case Page::LEARN_TUBE:
+    case Page::SUPPLIES:
     case Page::MYAIR:
     case Page::DIAGNOSTICS:
         return Page::MORE;
+    case Page::SUPPLY_CONFIRM:
+        return Page::SUPPLIES;
     case Page::MY_SLEEP_VIEW:
     case Page::MY_OPTIONS:
     case Page::MORE:
@@ -160,6 +179,9 @@ char g_editor_value_buf[24] = {0};
 /* LEARN_TUBE page (#85): centre line (16-char widget) and hint (40). */
 char g_learn_buf[16] = {0};
 char g_learn_hint_buf[40] = {0};
+/* SUPPLIES (#87): row values, and which item the confirm page is about. */
+char    g_supply_buf[24] = {0};
+uint8_t g_supply_item = 0U;
 
 static void syncEprToTherapy(const Settings& s)
 {
@@ -246,6 +268,32 @@ const char* MenuController::itemLabel(uint8_t idx) const
 
 const char* MenuController::itemValue(uint8_t idx) const
 {
+    /* #87: SUPPLIES rows show each item's state. */
+    if ((current_page_ == Page::SUPPLIES) && (idx > 0U))
+    {
+        SvcStatus_t st;
+        Service_GetStatus(static_cast<SvcItem_t>(idx - 1U), &st);
+        if (st.state == SVC_UNKNOWN)
+        {
+            return "--";
+        }
+        if (st.state == SVC_DUE)
+        {
+            return st.blocked ? "Blocked" : "Due";
+        }
+        /* Days left on the tighter of the two limits (hours at 8 h/night). */
+        int32_t left = static_cast<int32_t>((st.limit_h - st.used_h) / 8.0f);
+        if ((st.days >= 0) && ((st.limit_d - st.days) < left))
+        {
+            left = st.limit_d - st.days;
+        }
+        if (left < 0) { left = 0; }
+        (void)snprintf(g_supply_buf, sizeof(g_supply_buf), "%s %ld d",
+                       (st.state == SVC_SOON) ? "Soon" : "OK",
+                       static_cast<long>(left));
+        return g_supply_buf;
+    }
+
     /* Returns the right-hand current-value string for MY_OPTIONS rows.
      * Other lists don't show values on the right. Index 0 is the Back row
      * and intentionally has no value. */
@@ -396,6 +444,18 @@ void MenuController::onRotaryDelta(int delta)
         return;
     }
 
+    /* SUPPLY_CONFIRM: rotate between No (0) and Yes (1). */
+    if (current_page_ == Page::SUPPLY_CONFIRM)
+    {
+        const uint8_t sel = (delta > 0) ? 1U : 0U;
+        if (sel != selected_index_)
+        {
+            selected_index_ = sel;
+            needs_redraw_ = true;
+        }
+        return;
+    }
+
     /* LEARN_TUBE: rotate between Start (0) and Back (1) until a run has
      * been started from this visit (2). */
     if ((current_page_ == Page::LEARN_TUBE) && (selected_index_ < 2U)
@@ -428,6 +488,14 @@ void MenuController::onButtonPress()
             therapy_running_ = false;
             Therapy_Stop();
             goBack();
+        }
+        else if (current_page_ == Page::SUPPLY_CONFIRM)
+        {
+            if (selected_index_ == 1U)
+            {
+                Service_Replaced(static_cast<SvcItem_t>(g_supply_item));
+            }
+            goTo(Page::SUPPLIES, Mode::LIST, static_cast<uint8_t>(g_supply_item + 1U));
         }
         else if (current_page_ == Page::LEARN_TUBE)
         {
@@ -498,6 +566,15 @@ void MenuController::enterSelectedItem()
     if (items == nullptr || selected_index_ >= count) return;
 
     const ListItem& it = items[selected_index_];
+
+    /* #87: remember which consumable the confirm page is about; it opens
+     * on No, so a stray click changes nothing. */
+    if ((current_page_ == Page::SUPPLIES) && (it.target_page == Page::SUPPLY_CONFIRM))
+    {
+        g_supply_item = static_cast<uint8_t>(selected_index_ - 1U);
+        goTo(Page::SUPPLY_CONFIRM, Mode::INFO, 0U);
+        return;
+    }
 
     /* Honour "locked by care provider" - just bounce. */
     const Settings& s = getSettings();
@@ -606,6 +683,8 @@ const char* MenuController::editorTitle() const
     case Page::MORE:                 return "More";
     case Page::MASK_FIT:             return "Mask Fit";
     case Page::LEARN_TUBE:           return "Learn Tube";
+    case Page::SUPPLIES:             return "Supplies";
+    case Page::SUPPLY_CONFIRM:       return "Supplies";
     case Page::MYAIR:                return "myAir";
     case Page::DIAGNOSTICS:          return "Diagnostics";
     case Page::THERAPY:              return "Therapy";
@@ -635,6 +714,11 @@ const char* MenuController::learnTubeText() const
         return "Learn Tube";
     }
     return (CircuitLearn_GetResult()->fail == CL_OK) ? "Tube learned" : "Not learned";
+}
+
+const char* MenuController::supplyConfirmText() const
+{
+    return Service_ItemName(static_cast<SvcItem_t>(g_supply_item));
 }
 
 const char* MenuController::editorValueText() const
@@ -723,6 +807,9 @@ const char* MenuController::editorHint() const
         return "Click to return";
     case Page::MASK_FIT:
         return "Hold mask in place. Click to exit.";
+    case Page::SUPPLY_CONFIRM:
+        return (selected_index_ == 1U) ? "Replaced it?     No  >Yes<"
+                                       : "Replaced it?    >No<  Yes";
     case Page::LEARN_TUBE:
     {
         if (CircuitLearn_IsBusy())

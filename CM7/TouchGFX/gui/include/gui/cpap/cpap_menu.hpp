@@ -48,6 +48,8 @@ enum class Page : uint8_t
     DIAGNOSTICS,         /* live peripheral test results + sensor readings    */
     THERAPY,             /* dynamic pulse + summary                           */
     LEARN_TUBE,          /* #85: learn circuit, tube end open                 */
+    SUPPLIES,            /* #87: list of consumables and their state          */
+    SUPPLY_CONFIRM,      /* #87: "replaced?" Yes / No                         */
     NUM_PAGES
 };
 
@@ -91,6 +93,8 @@ public:
 
     /* LEARN_TUBE page (#85): the centre line. editorHint() has the rest. */
     const char* learnTubeText() const;
+    /* SUPPLY_CONFIRM page (#87): the item being confirmed. */
+    const char* supplyConfirmText() const;
 
     /* For the value-editor pages, the big text shown in the centre. */
     const char* editorValueText() const;
