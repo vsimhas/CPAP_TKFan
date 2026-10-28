@@ -2217,20 +2217,66 @@ since R10):
 - Measured from the pause level, a 55 % hypopnea in our signal is about
   (7.5 + 3) / (17 + 3) ≈ **0.52** of normal. At the lung it is about
   (14.3 − 5) / (26 − 5) ≈ **0.44**.
-- So our flow reading over-reads small breaths relative to large ones (scale, not
-  just offset). Re-zeroing each breath would push 55 % hypopneas above the 0.50
+- So our patient flow over-reads small breaths relative to large ones once
+  re-zeroed. Re-zeroing each breath would push 55 % hypopneas above the 0.50
   hypopnea line — fewer hypopneas scored.
-- The offset and the scale need fixing together, or the hypopnea rule re-tuned with
-  them.
+- The offset and this size dependence have one source (below), so they need fixing
+  together, not by re-zeroing.
+
+**Where the error is: the subtracted vent + leak model, not the flow sensor**
+(added 28 October after review).
+
+The question this raises is not sensor resolution, e.g. telling 1 L/min from
+2 L/min. Patient flow is a small difference of large numbers:
+
+| term | typical size at 4–8 cmH₂O |
+|---|---|
+| total flow through the flow element | 12–40 L/min — never near zero in therapy; the vent alone passes 12+ L/min |
+| − modelled vent flow | 12–18 L/min |
+| − estimated leak | a few to ~10 L/min |
+| **= patient flow** | about ±20 L/min; only 7–8 L/min at the peak of a hypopnea breath |
+
+- **The element always works at 12–40 L/min,** where its resolution is fine.
+- **What matters is accuracy of the subtraction:** to judge a 7 L/min breath's
+  shape, the vent model and leak estimate have to be right to about 1 L/min,
+  breath by breath.
+
+R10 (19 October, 8 cmH₂O, three-sensor capture above) already measured this:
+
+| | model subtracted | really leaving (vent as measured + box leak) | over-subtraction |
+|---|---|---|---|
+| normal breathing | 30.4 L/min | 19.6 + 10.1 = 29.7 | **0.7** |
+| 60 % hypopnea | 32.0 L/min | 20.0 + 9.5 = 29.5 | **2.5** |
+
+- **Total flow is right,** even on small breaths: hypopnea total-flow peak 7.6 vs
+  7.7 L/min on the external sensor.
+- **The model over-subtracts, and more so as breaths shrink:** +1.5 L/min from
+  normal breathing to the hypopnea, while the real leak fell 0.7 L/min.
+- **That one error explains both #25 findings:**
+  - the −3 L/min pause offset, so a detector measuring against 0 cuts off the
+    bottom of each breath;
+  - the size dependence: because the excess grows as breaths shrink, small
+    breaths look relatively too big once re-zeroed.
+  - A per-breath zero cannot remove an error that changes with breath size.
+- **Correction:** an earlier draft of this section suggested checking flow-element
+  linearity at low flow first. R10's data rules the element out, so that check
+  would most likely be wasted.
 
 **Options (not started):**
 
-1. **Per-breath zero:** measure each breath from the flow level in the expiratory
+1. **Fix the vent / leak model at its source (recommended).**
+   - First measure its error directly: the R10 harness `total_source.py` +
+     `total_analysis.py` (external sensor with the simulator box leak subtracted),
+     at 4 and 8 cmH₂O, normal and hypopnea breaths. That gives the subtraction
+     error as a function of pressure and breath size.
+   - Then fix whichever term is wrong: the vent curve at low pressure, the vent's
+     0.5 s mask-pressure filter, or the leak estimator's response to smaller breaths.
+   - Then re-run this sweep with the detector unchanged. With patient flow right,
+     measuring against 0 L/min should work again without re-zeroing.
+2. **Per-breath zero:** measure each breath from the flow level in the expiratory
    pause just before it, for both FL and Hyp. Then re-tune the hypopnea ratio and
-   re-run the trial 8c / threshold / flshape scripts for regressions.
-2. **Flow linearity first:** check flow-element linearity at low flow against COM4
-   with the box leak subtracted. The patient-flow offset and the small-breath scale
-   both come through it.
+   re-run the trial 8c / threshold / flshape scripts for regressions. This treats
+   the symptom; the size-dependent part of the error remains.
 3. **Leave it:** keep counting every hypopnea for AutoRamp, and record that the
    obstructive / central split of mildly flattened hypopneas is unreliable below
    about 5 cmH₂O.
