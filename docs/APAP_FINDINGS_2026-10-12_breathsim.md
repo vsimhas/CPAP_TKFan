@@ -2217,66 +2217,105 @@ since R10):
 - Measured from the pause level, a 55 % hypopnea in our signal is about
   (7.5 + 3) / (17 + 3) ≈ **0.52** of normal. At the lung it is about
   (14.3 − 5) / (26 − 5) ≈ **0.44**.
-- So our patient flow over-reads small breaths relative to large ones once
-  re-zeroed. Re-zeroing each breath would push 55 % hypopneas above the 0.50
-  hypopnea line — fewer hypopneas scored.
-- The offset and this size dependence have one source (below), so they need fixing
-  together, not by re-zeroing.
+- Re-zeroing each breath would push 55 % hypopneas above the 0.50 hypopnea line —
+  fewer hypopneas scored. Re-zeroing treats the symptom; the cause is below.
 
-**Where the error is: the subtracted vent + leak model, not the flow sensor**
-(added 28 October after review).
+**Where the error is: total flow at low and reverse flow, through VIVO's volume
+balance** (28 October; replaces an earlier draft that blamed the subtracted vent /
+leak model from the pre-R10 capture).
 
-The question this raises is not sensor resolution, e.g. telling 1 L/min from
-2 L/min. Patient flow is a small difference of large numbers:
+*Method.*
 
-| term | typical size at 4–8 cmH₂O |
-|---|---|
-| total flow through the flow element | 12–40 L/min — never near zero in therapy; the vent alone passes 12+ L/min |
-| − modelled vent flow | 12–18 L/min |
-| − estimated leak | a few to ~10 L/min |
-| **= patient flow** | about ±20 L/min; only 7–8 L/min at the peak of a hypopnea breath |
+- The R10 three-sensor capture (`total_source.py` + `total_analysis.py`) repeated
+  on the current build at **4 and 8 cmH₂O**. The script is normal | 60 % hypopnea |
+  normal | 50 % hypopnea | normal.
+- The harness now takes the pressure as an argument and saves to its own file.
+- The status line is polled at 1 Hz with VIVO's state: MeanRatio, its 10 s mean,
+  breath rate, and per-breath inspiratory / expiratory volumes.
 
-- **The element always works at 12–40 L/min,** where its resolution is fine.
-- **What matters is accuracy of the subtraction:** to judge a 7 L/min breath's
-  shape, the vent model and leak estimate have to be right to about 1 L/min,
-  breath by breath.
+*1. On the current build the subtracted model is close to right on average.*
 
-R10 (19 October, 8 cmH₂O, three-sensor capture above) already measured this:
-
-| | model subtracted | really leaving (vent as measured + box leak) | over-subtraction |
+| segment | model error, 4 cmH₂O | model error, 8 cmH₂O | patient-flow breath mean |
 |---|---|---|---|
-| normal breathing | 30.4 L/min | 19.6 + 10.1 = 29.7 | **0.7** |
-| 60 % hypopnea | 32.0 L/min | 20.0 + 9.5 = 29.5 | **2.5** |
+| normal | +0.9 to +1.0 | +0.8 to +0.9 | ≈ 0.0 |
+| 60 % hypopnea | +0.6 | +0.6 | ≈ 0.0 |
+| 50 % hypopnea | +0.7 | +0.8 | ≈ 0.0 |
 
-- **Total flow is right,** even on small breaths: hypopnea total-flow peak 7.6 vs
-  7.7 L/min on the external sensor.
-- **The model over-subtracts, and more so as breaths shrink:** +1.5 L/min from
-  normal breathing to the hypopnea, while the real leak fell 0.7 L/min.
-- **That one error explains both #25 findings:**
-  - the −3 L/min pause offset, so a detector measuring against 0 cuts off the
-    bottom of each breath;
-  - the size dependence: because the excess grows as breaths shrink, small
-    breaths look relatively too big once re-zeroed.
-  - A per-breath zero cannot remove an error that changes with breath size.
-- **Correction:** an earlier draft of this section suggested checking flow-element
-  linearity at low flow first. R10's data rules the element out, so that check
-  would most likely be wasted.
+- Model error = subtracted minus (vent as measured + real box leak), in L/min.
+- VIVO tracked every breath: 12 /min, inspiratory and expiratory volumes balanced,
+  MeanRatio steady.
+- The −2.1 L/min hypopnea offset of the 19 October capture was before R10's fix
+  (pause-DC zeroing off) and is gone.
+- So the subtracted vent / leak terms are **not** what breaks #25.
+
+*2. The error is inside the breath, and it is expiration.*
+
+- **Ensemble over the normal breaths** (plot `vivo_phase_error.png`): our patient
+  flow reads 1.5–2 L/min low through inspiration and the end-expiratory pause. It
+  reads 5–6 L/min high at peak expiration: its peak is −28 L/min where the
+  simulator's lung sensor reads −34.
+- **Mask pressure barely moves** (±0.2 cmH₂O), so this is not a vent-pressure
+  effect.
+- **The lung itself:** the flow just before inspiration is −0.2 to −0.4 L/min, and
+  round-breath flatness is 0.55–0.56 at both pressures.
+- **Ours:**
+
+| | flow just before inspiration | round-breath flatness |
+|---|---|---|
+| 4 cmH₂O, normal | −2.8 | 0.69 |
+| 8 cmH₂O, normal | −2.0 | 0.65 |
+| 4 cmH₂O, 60 % hypopnea | −1.3 | 0.63 |
+| 8 cmH₂O, 60 % hypopnea | −1.1 | 0.66 |
+
+*3. Where the shortfall comes from: the flow element at low and reverse flow.*
+
+Total flow minus external flow should be constant — it is the vent. By total-flow
+level, normal breathing:
+
+| total flow | 4 cmH₂O: total − external | 8 cmH₂O: total − external |
+|---|---|---|
+| 15–45 L/min (inspiration) | 13.3–14.0 | 20.1–20.5 |
+| 0–15 L/min | 17.4–19.0 | 23.3–24.8 |
+| below 0 (reverse) | 15.4–18.0 | 21.3 |
+
+- **Our total flow reads 3–5 L/min high** (less negative) when the flow through
+  the element is low or reversed — that is, at peak expiration.
+- **More reverse flow at 4 cmH₂O:** vent + leak is only ~21 L/min there, so
+  expiration takes total flow negative. At 4 cmH₂O, 12 % of normal breathing is
+  reverse flow, down to −9 L/min; at 8 cmH₂O it is 7 %, down to −4. That is why the
+  offset is worse at 4.
+- **Matches the bench history:** the ~150 slm element's reverse branch was not
+  re-measured after the 6–7 October recalibration.
+- **Caveat:** part of the 0–15 L/min band falls on the fastest flow transitions,
+  where a residual timing difference between the two sensors also shows up. The
+  sign and size agree with the expiratory-peak shortfall.
+
+*Chain of cause.*
+
+1. The element under-reads expiration.
+2. VIVO balances inspiratory and expiratory volume per breath, so it lowers the
+   whole patient-flow trace by ~1.5–2.5 L/min to compensate.
+3. The end-expiratory pause sits at −2 to −3 L/min.
+4. The FL detector measures breaths against 0 and judges only the top of each one.
+5. Small hypopnea breaths' flatness then depends on pressure.
+
+**What to fix:** the total-flow measurement at low and reverse flow. Neither the
+vent model nor the leak estimate needs fixing for this.
 
 **Options (not started):**
 
-1. **Fix the vent / leak model at its source (recommended).**
-   - First measure its error directly: the R10 harness `total_source.py` +
-     `total_analysis.py` (external sensor with the simulator box leak subtracted),
-     at 4 and 8 cmH₂O, normal and hypopnea breaths. That gives the subtraction
-     error as a function of pressure and breath size.
-   - Then fix whichever term is wrong: the vent curve at low pressure, the vent's
-     0.5 s mask-pressure filter, or the leak estimator's response to smaller breaths.
-   - Then re-run this sweep with the detector unchanged. With patient flow right,
-     measuring against 0 L/min should work again without re-zeroing.
+1. **Recalibrate the flow element's reverse branch and its low-flow region
+   (recommended).**
+   - Against the external sensor, with flow driven backwards through the element
+     at known rates. For example, the CPAP blower stopped and the simulator pushing
+     air back through the circuit, or a capped circuit with a known reverse source.
+   - Then re-run this capture at 4 and 8 cmH₂O: the pre-inspiration flow should
+     move to ≈ 0 and round-breath flatness to ≈ the lung's.
+   - Then re-run the hypopnea sweep (`cpap_hyp_lowp.py`) with the detector
+     unchanged.
 2. **Per-breath zero:** measure each breath from the flow level in the expiratory
-   pause just before it, for both FL and Hyp. Then re-tune the hypopnea ratio and
-   re-run the trial 8c / threshold / flshape scripts for regressions. This treats
-   the symptom; the size-dependent part of the error remains.
+   pause just before it, for both FL and Hyp, and re-tune the hypopnea ratio. This
+   treats the symptom; leave it for if option 1 is not enough.
 3. **Leave it:** keep counting every hypopnea for AutoRamp, and record that the
    obstructive / central split of mildly flattened hypopneas is unreliable below
    about 5 cmH₂O.
@@ -2290,6 +2329,9 @@ R10 (19 October, 8 cmH₂O, three-sensor capture above) already measured this:
 - **Flatness comparison:** `cpap_flat_ext_20261028_12{3853,4542}.*`, the latter with
   the raw telemetry, plus `cpap_flat_ext_waveforms.png`.
 - **Void runs (stalled simulator):** `cpap_hyp_lowp_console{,2}.txt`.
+- **Three-sensor capture at 4 / 8 cmH₂O:** `total_raw_P4_20261028_133918.pkl`,
+  `total_raw_P8_20261028_134545.pkl`, consoles `total_source_P{4,8}_console.txt`,
+  and the ensemble plot `vivo_phase_error.png`.
 
 ## Evidence
 
