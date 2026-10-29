@@ -156,6 +156,12 @@ static bool runPressureChecks(uint32_t dt_ms)
 {
     const float meas   = Therapy_GetMeasuredCmh2o();
     const float target = Therapy_GetTargetPressure();
+    /* #8: a setting change reaches the blower at 0.5 cmH2O/s, so judge
+     * against what is commanded now. Over-pressure: the higher of the two,
+     * so a slow decrease is not a fault (and an increase still is judged on
+     * the target). Saturation: what the loop is actually aiming at. */
+    const float commanded = Therapy_GetCommandedPressureCmh2o();
+    const float over_ref  = (commanded > target) ? commanded : target;
     const int32_t rpm  = (int32_t)BlowerCtrl_GetOutputRpm();
     const bool grace   = Therapy_SafetyGraceActive();
 
@@ -203,7 +209,7 @@ static bool runPressureChecks(uint32_t dt_ms)
         s_low_press_ms = 0U;
     }
 
-    if (!grace && (meas > (target + g_safety_overpress_band_cmh2o)))
+    if (!grace && (meas > (over_ref + g_safety_overpress_band_cmh2o)))
     {
         s_overpress_ms += dt_ms;
         if (s_overpress_ms >= (uint32_t)(g_safety_overpress_timeout_s * 1000.0f))
@@ -236,7 +242,7 @@ static bool runPressureChecks(uint32_t dt_ms)
     if (!grace && !Therapy_IsMaskOffActive() && !Therapy_IsMaskOffArming())
     {
         const bool at_safe_max = (rpm >= g_safety_safe_rpm_max);
-        const bool not_close   = (fabsf(target - meas) > g_safety_saturate_band_cmh2o);
+        const bool not_close   = (fabsf(commanded - meas) > g_safety_saturate_band_cmh2o);
         if (at_safe_max && not_close)
         {
             s_saturated_ms += dt_ms;

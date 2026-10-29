@@ -484,6 +484,23 @@ static float settingSlewedBase(float desired, float dt_s)
     return s_base_sp_cmh2o;
 }
 
+/* #8 follow-up: the pressure therapy is commanding now - the slewed base
+ * while a setting change is being slewed, else the target. The safety
+ * supervisor judges over-pressure and saturation against this, not only the
+ * final target: coming down 18.5 -> 4 cmH2O at 0.5 cmH2O/s, the measured
+ * pressure stayed above target + 5 for ~20 s and latched OVER_PRESSURE
+ * (bench, 2026-10-29). */
+float Therapy_GetCommandedPressureCmh2o(void)
+{
+    const TherapyState_t st = (TherapyState_t)g_therapy_state;
+    if (s_base_sp_valid
+        && ((st == THERAPY_STATE_RAMP) || (st == THERAPY_STATE_RUNNING)))
+    {
+        return s_base_sp_cmh2o;
+    }
+    return g_therapy_target_cmh2o;
+}
+
 /* Last EPR settings from USB/GUI — re-applied atomically at Therapy_Start so
  * relief level cannot be left at the default 1 cmH2O if commands reorder. */
 static uint8_t  s_epr_cfg_enable = 0U;

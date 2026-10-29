@@ -131,6 +131,9 @@ void   Therapy_Stop(void);
 /* Configuration (the GUI calls these from cpap_settings on edit). */
 void   Therapy_SetTargetPressure(float cmh2o);   /* clamped 4..25         */
 float  Therapy_GetTargetPressure(void);
+/* #8: what therapy is commanding now (a setting change being slewed toward
+ * the target), for the safety checks. */
+float  Therapy_GetCommandedPressureCmh2o(void);
 void   Therapy_SetRampMinutes(uint8_t minutes);  /* 0 = no ramp           */
 uint8_t Therapy_GetRampMinutes(void);
 /* #38 AutoRamp: overrides the minutes. Hold the ramp start pressure until
