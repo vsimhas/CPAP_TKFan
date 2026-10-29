@@ -451,6 +451,39 @@ static uint32_t s_safety_reconnect_grace_until_ms = 0U; /* low-P safety grace   
 static uint32_t s_mask_off_resume_boost_ms = 0U;
 static uint32_t s_mask_off_resume_repost_ms = 0U;
 
+/* #8: smooth setting transitions. The pressure the session is given
+ * (CPAP setting, or the AutoSet target) reaches the blower's setpoint at no
+ * more than this rate, so a setting changed during therapy (CPAP pressure,
+ * CPAP <-> AutoSet, a new AutoSet range) moves the pressure over seconds
+ * instead of a ~0.3 s step (the blower's own slew is 18 cmH2O/s, sized for
+ * EPR). 0.5 cmH2O/s: a 6 cmH2O change takes 12 s. AutoSet's own changes are
+ * far slower (<= ~3 cmH2O/min) and pass through untouched; FOT and EPR act
+ * after this, so neither is affected. 0 = previous behaviour (step). */
+volatile float   g_therapy_setting_slew_cmh2o_per_s = 0.5f;
+/* #8: EPR switched on / off during therapy changes the pressure at the next
+ * breath boundary (Epr_EngageAtNextBreath / DisengageAtNextBreath) instead of
+ * snapping. 0 = previous behaviour. */
+volatile uint8_t g_therapy_epr_soft_switch = 1U;
+static float     s_base_sp_cmh2o = 0.0f;
+static bool      s_base_sp_valid = false;
+
+static float settingSlewedBase(float desired, float dt_s)
+{
+    const float rate = g_therapy_setting_slew_cmh2o_per_s;
+    if (!s_base_sp_valid || !(rate > 0.0f))
+    {
+        s_base_sp_cmh2o = desired;
+        s_base_sp_valid = true;
+        return desired;
+    }
+    const float step = rate * dt_s;
+    const float diff = desired - s_base_sp_cmh2o;
+    if (diff > step)       { s_base_sp_cmh2o += step; }
+    else if (diff < -step) { s_base_sp_cmh2o -= step; }
+    else                   { s_base_sp_cmh2o = desired; }
+    return s_base_sp_cmh2o;
+}
+
 /* Last EPR settings from USB/GUI — re-applied atomically at Therapy_Start so
  * relief level cannot be left at the default 1 cmH2O if commands reorder. */
 static uint8_t  s_epr_cfg_enable = 0U;
@@ -2411,8 +2444,27 @@ uint32_t Therapy_GetRampRemainingSeconds(void)
 
 void Therapy_SetEprEnabled(bool en)
 {
-    const bool was_enabled = Epr_IsEnabled();
+    const bool was_enabled = Epr_IsEnabled() && !Epr_IsTransitionPending();
     s_epr_cfg_enable = en ? 1U : 0U;
+    const TherapyState_t st = (TherapyState_t)g_therapy_state;
+    const bool in_session = (st == THERAPY_STATE_RAMP) || (st == THERAPY_STATE_RUNNING);
+
+    /* #8: during therapy, switch at the next breath boundary. */
+    if (in_session && (g_therapy_epr_soft_switch != 0U))
+    {
+        if (en && !was_enabled)
+        {
+            applyStoredEprConfig();
+            Epr_SetEnable(true);
+            Epr_EngageAtNextBreath();
+        }
+        else if (!en && Epr_IsEnabled())
+        {
+            Epr_DisengageAtNextBreath();     /* disables itself */
+        }
+        return;
+    }
+
     Epr_SetEnable(en);
 
     if (!en || was_enabled)
@@ -2420,8 +2472,7 @@ void Therapy_SetEprEnabled(bool en)
         return;
     }
 
-    const TherapyState_t st = (TherapyState_t)g_therapy_state;
-    if ((st != THERAPY_STATE_RAMP) && (st != THERAPY_STATE_RUNNING))
+    if (!in_session)
     {
         return;
     }
@@ -2574,6 +2625,7 @@ void Therapy_Start(void)
 static void therapyArm(void)
 {
     s_session_armed = true;
+    s_base_sp_valid = false;             /* #8: first tick takes the target */
     /* Re-apply the safety RPM ceiling in case it was poked. */
     extern volatile int32_t g_blower_ctrl_rpm_max;
     g_blower_ctrl_rpm_max = g_safety_safe_rpm_max;
@@ -2925,6 +2977,8 @@ void Therapy_Update(float dt_s)
             const float sp   = s_ramp_start_cmh2o
                              + frac * (s_session_target_cmh2o
                                        - s_ramp_start_cmh2o);
+            s_base_sp_cmh2o = sp;            /* #8: RUNNING continues from here */
+            s_base_sp_valid = true;
             applyTherapySetpoint(sp, dt_s);
         }
         sessionPressureSample(g_therapy_measured_cmh2o);
@@ -2950,7 +3004,7 @@ void Therapy_Update(float dt_s)
                                                   s_mask_off_active);
             s_session_target_cmh2o = apap_target;
             g_therapy_target_cmh2o   = apap_target;
-            applyTherapySetpoint(s_session_target_cmh2o, dt_s);
+            applyTherapySetpoint(settingSlewedBase(s_session_target_cmh2o, dt_s), dt_s);
         }
         else
         {
@@ -2965,7 +3019,7 @@ void Therapy_Update(float dt_s)
             }
             /* #33: detectors only - the APAP target is ignored here. */
             (void)Apap_Update(dt_s, g_therapy_state, s_mask_off_active);
-            applyTherapySetpoint(s_session_target_cmh2o, dt_s);
+            applyTherapySetpoint(settingSlewedBase(s_session_target_cmh2o, dt_s), dt_s);
         }
         g_therapy_run_ms += dt_ms;
         sessionPressureSample(g_therapy_measured_cmh2o);

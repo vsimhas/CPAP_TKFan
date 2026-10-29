@@ -542,8 +542,46 @@ static void resetBreathFsmCore(void)
     s_early_exp_relief_latched = false;
 }
 
+/* #8: switching EPR on or off mid-session changes the pressure at the next
+ * breath boundary, where EPR changes it anyway, instead of at whatever moment
+ * the command arrives (that was a 1-3 cmH2O step, mid-exhalation). */
+#define EPR_DISENGAGE_MAX_MS  10000U   /* no inspiration by then: slew off */
+static bool     s_engage_wait = false;     /* relief held off until a breath */
+static bool     s_disengage_wait = false;  /* relief kept until inspiration */
+static uint32_t s_disengage_ms = 0U;
+
+void Epr_EngageAtNextBreath(void)
+{
+    s_engage_wait = true;
+    s_disengage_wait = false;
+}
+
+void Epr_DisengageAtNextBreath(void)
+{
+    s_disengage_wait = true;
+    s_disengage_ms = 0U;
+    s_engage_wait = false;
+}
+
+bool Epr_IsTransitionPending(void)
+{
+    return s_engage_wait || s_disengage_wait;
+}
+
+/* A reset or a new session settles any pending switch: off stays off. */
+static void settlePendingSwitch(void)
+{
+    if (s_disengage_wait)
+    {
+        g_epr_enabled = 0U;
+    }
+    s_disengage_wait = false;
+    s_engage_wait = false;
+}
+
 void Epr_ResetBreathState(void)
 {
+    settlePendingSwitch();
     resetBreathFsmCore();
     g_epr_active_relief_cmh2o = 0.0f;
     s_startup_grace_ms = 0U;
@@ -587,6 +625,7 @@ void Epr_SetStartupHoldTarget(float expiratory_sp_cmh2o)
 
 void Epr_OnTherapyStart(void)
 {
+    settlePendingSwitch();
     resetBreathFsmCore();
 
     if (g_epr_enabled != 0U)
@@ -1175,8 +1214,36 @@ float Epr_ModifySetpoint(float base_setpoint_cmh2o, float dt_s,
         return base_setpoint_cmh2o;
     }
 
+    /* #8: just switched on - no relief until an inspiration has been seen,
+     * so it first appears at the exhalation after it, like every breath. */
+    if (s_engage_wait)
+    {
+        if (!eprInspirationActive())
+        {
+            g_epr_active_relief_cmh2o = 0.0f;
+            return base_setpoint_cmh2o;
+        }
+        s_engage_wait = false;
+    }
+
     float target_relief = 0.0f;
-    if (!eprInspirationActive())
+    bool  force_restore = false;
+    if (s_disengage_wait)
+    {
+        /* #8: just switched off - keep relief until the next inspiration
+         * restores it as usual (or, with no breath for 10 s, slew it off at
+         * the same restore rate), then stop. */
+        s_disengage_ms += (uint32_t)(dt_s * 1000.0f);
+        force_restore = eprInspirationActive() || (s_disengage_ms >= EPR_DISENGAGE_MAX_MS);
+        if (force_restore && (g_epr_active_relief_cmh2o <= 0.001f))
+        {
+            s_disengage_wait = false;
+            g_epr_enabled = 0U;
+            g_epr_active_relief_cmh2o = 0.0f;
+            return base_setpoint_cmh2o;
+        }
+    }
+    if (!eprInspirationActive() && !force_restore)
     {
         /* AirSense baseline: CPAP - level except during inspiration. */
         target_relief = g_epr_relief_cmh2o;

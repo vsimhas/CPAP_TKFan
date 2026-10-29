@@ -51,6 +51,10 @@ typedef enum
 void       Epr_Init(void);
 
 void       Epr_SetEnable(bool en);
+/* #8: mid-session switch-on / switch-off at the next breath boundary. */
+void       Epr_EngageAtNextBreath(void);
+void       Epr_DisengageAtNextBreath(void);
+bool       Epr_IsTransitionPending(void);
 bool       Epr_IsEnabled(void);
 
 /* EPR type and level (AirSense-style). Level is 1, 2, or 3 cmH2O. */

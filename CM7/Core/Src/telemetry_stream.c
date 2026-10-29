@@ -2624,6 +2624,34 @@ static void Telem_ProcessOneCommand(const char *cmd)
     return;
   }
 
+  /* #8: smooth setting transitions (0 = previous behaviour). */
+  if (strncmp(cmd, "therapy set setting_slew ", 25U) == 0)
+  {
+    extern volatile float g_therapy_setting_slew_cmh2o_per_s;
+    float v = 0.0f;
+    if (sscanf(&cmd[25], "%f", &v) != 1 || (v < 0.0f) || (v > 10.0f))
+    {
+      Telem_PushErr("setting_slew 0..10 cmH2O/s (0 = step)");
+      return;
+    }
+    g_therapy_setting_slew_cmh2o_per_s = v;
+    Telem_PushAck(cmd);
+    return;
+  }
+  if (strncmp(cmd, "therapy set epr_soft ", 21U) == 0)
+  {
+    extern volatile uint8_t g_therapy_epr_soft_switch;
+    long v = 0;
+    if (!Telem_ParseLong(&cmd[21], &v) || ((v != 0L) && (v != 1L)))
+    {
+      Telem_PushErr("epr_soft 0|1");
+      return;
+    }
+    g_therapy_epr_soft_switch = (uint8_t)v;
+    Telem_PushAck(cmd);
+    return;
+  }
+
   if (strncmp(cmd, "therapy set ramp_start ", 23U) == 0)
   {
     float v = 0.0f;

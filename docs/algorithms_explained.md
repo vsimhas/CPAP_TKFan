@@ -335,6 +335,38 @@ Why: a step demand asks the loop to do something physically impossible, and the
 integrator winds up trying. Slewing the target means the error stays realistic
 and the loop stays in its linear region.
 
+**Setting changes during therapy (checklist #8).** 18 cmH₂O/s is sized for EPR's
+breath-by-breath changes; a patient feels it as a step. So, one level up,
+`therapy.c` moves the pressure the session is given (the CPAP setting, or the
+AutoSet target) toward a new value at **0.5 cmH₂O/s**. This covers a pressure
+change, CPAP ↔ AutoSet, and a new AutoSet range.
+
+- AutoSet's own changes (≤ ~3 cmH₂O/min) pass through untouched.
+- EPR and the forced oscillation act after this stage, so neither is slowed.
+- Switching EPR on or off mid-session no longer snaps: relief starts at the first
+  exhalation after the command, and is removed at the next inspiration.
+  - With no breath for 10 s, the relief slews off.
+  - A mask-off reset or a new session settles a pending switch-off.
+
+Bench, 2026-10-28 (simulator breathing, pressure at the lung, old vs new on one
+build):
+
+| change | old: jump in 1 s / peak rate | new: jump in 1 s / peak rate | new: 90 % after |
+|---|---|---|---|
+| CPAP 8 → 12 | +3.8 / 14 cmH₂O/s | +0.3 / 1.9 (breathing 1.2) | 7.8 s |
+| CPAP 12 → 8 | −4.3 / 13 | −0.8 / 1.2 (breathing 2.1) | 8.0 s |
+| CPAP → 10 | +1.7 / 8 | +0.5 / 2.0 | 4.8 s |
+
+- **EPR on, old:** relief dropped mid-inspiration at the command. The re-start
+  reset the breath detector, so AutoSet saw an "apnea" and ran a 7 s FOT burst
+  (±1.5 cmH₂O at ~3–4 Hz) on a breathing patient.
+- **EPR on, new:** relief from the next exhalation; no burst.
+- **EPR off:** the old code raised the pressure mid-pause at the command; the new
+  code restores it with the next inspiration.
+
+`therapy set setting_slew 0` / `therapy set epr_soft 0` restore the old
+behaviour.
+
 ### 7.3 Step two: pick the gains (gain scheduling)
 
 A blower is not a linear device. Near 4 cmH₂O, a small RPM change moves the
